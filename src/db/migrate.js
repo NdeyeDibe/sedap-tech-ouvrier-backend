@@ -1,10 +1,3 @@
-// Script de migration simple : exécute schema.sql contre la base
-// configurée dans .env. Pas d'outil de migration complexe (Prisma,
-// Knex...) pour l'instant — vu la taille du projet, un fichier SQL
-// unique relu à chaque fois (CREATE TABLE IF NOT EXISTS partout) suffit
-// et reste facile à comprendre/modifier à la main.
-//
-// Utilisation : npm run migrate
 const fs = require("fs");
 const path = require("path");
 const pool = require("./pool");

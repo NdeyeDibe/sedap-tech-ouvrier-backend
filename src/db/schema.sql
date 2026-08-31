@@ -12,7 +12,12 @@
 CREATE TABLE IF NOT EXISTS ouvriers (
   id SERIAL PRIMARY KEY,
   telephone VARCHAR(20) UNIQUE NOT NULL,
-  pin_hash VARCHAR(255) NOT NULL, -- jamais le PIN en clair, toujours haché (bcrypt)
+  -- pin_hash est NULL tant que l'ouvrier n'a pas encore créé son code :
+  -- le compte est d'abord créé par le PROPRIÉTAIRE (nom, prénom,
+  -- téléphone) depuis SON interface — l'ouvrier ne fait que définir son
+  -- PIN sur ce compte déjà existant, jamais créer un compte lui-même.
+  pin_hash VARCHAR(255), -- jamais le PIN en clair, toujours haché (bcrypt)
+  nom VARCHAR(100),
   prenom VARCHAR(100),
   tentatives_echouees INT NOT NULL DEFAULT 0, -- pour la règle "3 tentatives -> compte verrouillé"
   compte_verrouille BOOLEAN NOT NULL DEFAULT FALSE,
@@ -124,7 +129,7 @@ CREATE TABLE IF NOT EXISTS stock_produits (
   id SERIAL PRIMARY KEY,
   poulailler_id INT NOT NULL REFERENCES poulaillers(id) ON DELETE CASCADE,
   produit_id VARCHAR(30) NOT NULL, -- 'aliment' | 'gaz' | 'litiere' | 'vitamines' | 'antistress' | 'vaccin'
-  variante_id VARCHAR(50) NOT NULL, -- ex: 'demarrage', '6kg', 'pot', 'gumbolo_l'...
+  variante_id VARCHAR(50) NOT NULL, -- ex: 'demarrage', '6kg', 'pot', 'gumboro_l'...
   nom VARCHAR(100) NOT NULL,
   unite VARCHAR(20) NOT NULL, -- 'kg' | 'bouteilles' | 'sacs' | 'unités' | 'doses'
   quantite NUMERIC(10,2) NOT NULL DEFAULT 0,

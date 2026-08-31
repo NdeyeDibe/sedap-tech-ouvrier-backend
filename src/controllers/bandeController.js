@@ -84,6 +84,10 @@ async function bandeActive(req, res) {
     const bande = resultatBande.rows[0];
 
     const resultatMortalite = await pool.query(
+      // IMPORTANT : la mortalité totale inclut morts_a_larrivee (colonne
+      // de la bande elle-même, saisie à la création) EN PLUS des saisies
+      // quotidiennes — sinon les morts à la réception des poussins ne
+      // comptent jamais dans "sujets restants" (bug trouvé en test).
       "SELECT COALESCE(SUM(mortalite), 0) AS total FROM saisies_mortalite WHERE bande_id = $1",
       [bande.id]
     );
@@ -92,7 +96,7 @@ async function bandeActive(req, res) {
       [bande.id]
     );
 
-    const mortaliteTotale = parseInt(resultatMortalite.rows[0].total, 10);
+    const mortaliteTotale = bande.morts_a_larrivee + parseInt(resultatMortalite.rows[0].total, 10);
     const ventesTotales = parseInt(resultatVentes.rows[0].total, 10);
     const sujetsRestants = bande.poussins_recus - mortaliteTotale - ventesTotales;
 
@@ -139,11 +143,47 @@ async function terminerBande(req, res) {
       return res.status(404).json({ erreur: "Bande introuvable ou déjà terminée." });
     }
 
+    await client.query("COMMIT");
     res.json(resultat.rows[0]);
   } catch (erreur) {
+    await client.query("ROLLBACK");
     console.error("Erreur clôture bande :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
+// PATCH /api/bandes/:id/jour-test — TODO(TEST), à retirer avant la
+// vraie livraison. Le jour d'une bande est calculé à partir de
+// date_debut (vraie date, pas une valeur qu'on peut juste changer) —
+// cet endpoint recule artificiellement date_debut pour simuler "on est
+// au jour X", utile pour tester rapidement les bandeaux Vaccin/Pesage
+// ou le bouton "Terminer la bande" sans attendre le vrai nombre de jours.
+async function forcerJourPourTest(req, res) {
+  const { id } = req.params;
+  const { jour } = req.body;
+
+  if (!jour || jour < 1) {
+    return res.status(400).json({ erreur: "jour doit être un nombre positif." });
+  }
+
+  try {
+    const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
+    const resultat = await pool.query(
+      `UPDATE bandes SET date_debut = now() - ($1 - 1) * INTERVAL '1 day'
+       WHERE id = $2 AND poulailler_id = $3
+       RETURNING *, EXTRACT(DAY FROM now() - date_debut)::int + 1 AS jour_actuel`,
+      [jour, id, poulaillerId]
+    );
+    if (resultat.rows.length === 0) {
+      return res.status(404).json({ erreur: "Bande introuvable." });
+    }
+    res.json(resultat.rows[0]);
+  } catch (erreur) {
+    console.error("Erreur forcer jour test :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
   }
 }
 
-module.exports = { creerBande, listerBandes, bandeActive, terminerBande };
+module.exports = { creerBande, listerBandes, bandeActive, terminerBande, forcerJourPourTest };

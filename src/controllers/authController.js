@@ -9,14 +9,19 @@ function genererToken(ouvrierId) {
   return jwt.sign({ ouvrierId }, process.env.JWT_SECRET, { expiresIn: "30d" });
 }
 
-async function inscription(req, res) {
-  const { telephone, pin, prenom } = req.body;
+// PRÉ-INSCRIPTION — TODO(INTERFACE PROPRIÉTAIRE) : cet endpoint tient
+// lieu de l'interface propriétaire, qui n'existe pas encore dans ce
+// projet. C'est LUI qui doit créer le compte de l'ouvrier (nom, prénom,
+// téléphone) avant que celui-ci ne reçoive le lien de l'appli par SMS.
+// Pas de PIN ici : l'ouvrier le définit lui-même à sa première
+// connexion (voir creerPin ci-dessous). Volontairement SANS
+// authentification pour l'instant (aucun rôle "propriétaire" n'existe
+// encore) — à sécuriser dès que l'interface propriétaire sera bâtie.
+async function preInscrire(req, res) {
+  const { telephone, nom, prenom } = req.body;
 
-  if (!telephone || !pin) {
-    return res.status(400).json({ erreur: "Téléphone et code PIN requis." });
-  }
-  if (!/^\d{4}$/.test(pin)) {
-    return res.status(400).json({ erreur: "Le code PIN doit contenir exactement 4 chiffres." });
+  if (!telephone) {
+    return res.status(400).json({ erreur: "Téléphone requis." });
   }
 
   const client = await pool.connect();
@@ -29,38 +34,71 @@ async function inscription(req, res) {
       return res.status(409).json({ erreur: "Ce numéro de téléphone a déjà un compte." });
     }
 
-    const pinHash = await bcrypt.hash(pin, TOUR_DE_HACHAGE);
-
     await client.query("BEGIN");
 
     const resultatOuvrier = await client.query(
-      `INSERT INTO ouvriers (telephone, pin_hash, prenom)
-       VALUES ($1, $2, $3) RETURNING id, prenom`,
-      [telephone, pinHash, prenom || null]
+      `INSERT INTO ouvriers (telephone, nom, prenom)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [telephone, nom || null, prenom || null]
     );
-    const ouvrier = resultatOuvrier.rows[0];
+    const ouvrierId = resultatOuvrier.rows[0].id;
 
     const resultatPoulailler = await client.query(
       "INSERT INTO poulaillers (ouvrier_id) VALUES ($1) RETURNING id",
-      [ouvrier.id]
+      [ouvrierId]
     );
     const poulaillerId = resultatPoulailler.rows[0].id;
 
-    // Initialise le catalogue de stock à 0 pour ce nouveau poulailler
-    // (voir stockController.js -> seedStockInitial, appelé ici pour que
-    // les écrans Stock ne partent jamais de zéro catalogue vide)
     await seedStockInitial(client, poulaillerId);
 
     await client.query("COMMIT");
+    res.status(201).json({ ouvrierId, telephone });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur pré-inscription :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur pendant la pré-inscription." });
+  } finally {
+    client.release();
+  }
+}
+
+// L'ouvrier définit son code PIN sur un compte DÉJÀ pré-enregistré par
+// le propriétaire (voir preInscrire ci-dessus) — ne crée jamais de
+// nouveau compte lui-même.
+async function creerPin(req, res) {
+  const { telephone, pin } = req.body;
+
+  if (!telephone || !pin) {
+    return res.status(400).json({ erreur: "Téléphone et code PIN requis." });
+  }
+  if (!/^\d{4}$/.test(pin)) {
+    return res.status(400).json({ erreur: "Le code PIN doit contenir exactement 4 chiffres." });
+  }
+
+  try {
+    const resultat = await pool.query(
+      "SELECT id, pin_hash, prenom FROM ouvriers WHERE telephone = $1",
+      [telephone]
+    );
+
+    if (resultat.rows.length === 0) {
+      return res.status(404).json({ erreur: "Numéro non reconnu. Demandez à votre responsable de vous enregistrer d'abord." });
+    }
+
+    const ouvrier = resultat.rows[0];
+
+    if (ouvrier.pin_hash) {
+      return res.status(409).json({ erreur: "Ce compte a déjà un code PIN. Utilisez plutôt la connexion." });
+    }
+
+    const pinHash = await bcrypt.hash(pin, TOUR_DE_HACHAGE);
+    await pool.query("UPDATE ouvriers SET pin_hash = $1 WHERE id = $2", [pinHash, ouvrier.id]);
 
     const token = genererToken(ouvrier.id);
     res.status(201).json({ token, ouvrierId: ouvrier.id, prenom: ouvrier.prenom });
   } catch (erreur) {
-    await client.query("ROLLBACK");
-    console.error("Erreur inscription :", erreur);
-    res.status(500).json({ erreur: "Erreur serveur pendant l'inscription." });
-  } finally {
-    client.release();
+    console.error("Erreur création PIN :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur pendant la création du code." });
   }
 }
 
@@ -123,6 +161,10 @@ async function connexion(req, res) {
       });
     }
 
+    if (!ouvrier.pin_hash) {
+      return res.status(409).json({ erreur: "Aucun code PIN défini pour ce compte. Créez-le d'abord." });
+    }
+
     const pinCorrect = await bcrypt.compare(pin, ouvrier.pin_hash);
 
     if (!pinCorrect) {
@@ -163,7 +205,7 @@ async function connexion(req, res) {
 async function moi(req, res) {
   try {
     const resultat = await pool.query(
-      "SELECT id, telephone, prenom FROM ouvriers WHERE id = $1",
+      "SELECT id, telephone, nom, prenom FROM ouvriers WHERE id = $1",
       [req.ouvrierId]
     );
     if (resultat.rows.length === 0) {
@@ -176,4 +218,4 @@ async function moi(req, res) {
   }
 }
 
-module.exports = { inscription, connexion, moi };
+module.exports = { preInscrire, creerPin, connexion, moi };

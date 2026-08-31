@@ -1,14 +1,5 @@
-// Contrôleur des saisies quotidiennes — CDC section V (Mortalité,
-// Santé) et VII (Alimentation). Remplace lib/saisieDuJourStore.js du
-// frontend (actuellement en mémoire) par de vraies données persistées.
-//
-// Règle CDC : une seule saisie mortalité/santé par bande et par jour
-// (contrainte UNIQUE en base, voir schema.sql) — enregistrer deux fois
-// le même jour MET À JOUR la saisie existante plutôt que d'en créer une
-// deuxième (comportement "upsert").
 const pool = require("../db/pool");
 
-// POST /api/bandes/:bandeId/saisies/mortalite
 async function enregistrerMortalite(req, res) {
   const { bandeId } = req.params;
   const { mortalite, nbPhotos } = req.body;
@@ -16,9 +7,6 @@ async function enregistrerMortalite(req, res) {
   if (mortalite === undefined || mortalite < 0) {
     return res.status(400).json({ erreur: "La mortalité doit être un nombre positif ou nul." });
   }
-  // Règle CDC : si mortalité > 0, au moins 1 photo attendue (le
-  // frontend bloque déjà ça, mais on revérifie côté serveur aussi —
-  // ne jamais faire confiance uniquement à l'interface)
   if (mortalite > 0 && (!nbPhotos || nbPhotos < 1)) {
     return res.status(400).json({ erreur: "Au moins une photo est requise si mortalité > 0." });
   }
@@ -39,7 +27,6 @@ async function enregistrerMortalite(req, res) {
   }
 }
 
-// POST /api/bandes/:bandeId/saisies/sante
 async function enregistrerSante(req, res) {
   const { bandeId } = req.params;
   const { etat, aVocal, aPhoto } = req.body;
@@ -47,7 +34,6 @@ async function enregistrerSante(req, res) {
   if (!["bien", "anormal", "urgent"].includes(etat)) {
     return res.status(400).json({ erreur: "État invalide (bien, anormal ou urgent attendu)." });
   }
-  // CDC : si anormal/urgent, au moins une preuve (photo ET/OU vocal) requise
   if (etat !== "bien" && !aVocal && !aPhoto) {
     return res.status(400).json({ erreur: "Une preuve (photo ou vocal) est requise pour Anormal/Urgent." });
   }
@@ -68,9 +54,6 @@ async function enregistrerSante(req, res) {
   }
 }
 
-// POST /api/bandes/:bandeId/saisies/alimentation
-// Body : { lignes: [{ typeAliment, sacs, kg }, ...] } — plusieurs lignes
-// possibles pour couvrir le mélange de types le même jour (décision Ndeye)
 async function enregistrerAlimentation(req, res) {
   const { bandeId } = req.params;
   const { lignes } = req.body;
@@ -83,8 +66,6 @@ async function enregistrerAlimentation(req, res) {
   try {
     await client.query("BEGIN");
 
-    // On remplace toutes les lignes du jour (plutôt que d'accumuler) —
-    // évite les doublons si l'ouvrier revient corriger sa saisie du jour
     await client.query(
       "DELETE FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE",
       [bandeId]
@@ -100,7 +81,6 @@ async function enregistrerAlimentation(req, res) {
       );
       lignesInserees.push(resultat.rows[0]);
 
-      // Décrémente le stock correspondant (kg précis, cf décision Mengué)
       const totalKg = (ligne.sacs || 0) * 50 + (ligne.kg || 0);
       await client.query(
         `UPDATE stock_produits SET quantite = quantite - $1
@@ -121,23 +101,31 @@ async function enregistrerAlimentation(req, res) {
   }
 }
 
-// GET /api/bandes/:bandeId/saisie-du-jour — tout ce qui a déjà été
-// saisi aujourd'hui pour cette bande (remplace saisieDuJourStore.js du
-// frontend, qui gardait ça en mémoire volatile)
 async function getSaisieDuJour(req, res) {
   const { bandeId } = req.params;
 
   try {
-    const [mortalite, sante, alimentation] = await Promise.all([
+    const [mortalite, sante, alimentation, vaccination, pesage, produitsUtilises] = await Promise.all([
       pool.query("SELECT * FROM saisies_mortalite WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query("SELECT * FROM saisies_sante WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query("SELECT * FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
+      pool.query("SELECT * FROM vaccinations WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
+      pool.query("SELECT * FROM pesages WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
+      pool.query(
+        `SELECT pu.*, sp.nom, sp.produit_id, sp.variante_id FROM produits_utilises pu
+         JOIN stock_produits sp ON sp.id = pu.stock_produit_id
+         WHERE pu.bande_id = $1 AND pu.date_saisie = CURRENT_DATE`,
+        [bandeId]
+      ),
     ]);
 
     res.json({
       mortalite: mortalite.rows[0] || null,
       sante: sante.rows[0] || null,
       alimentation: alimentation.rows,
+      vaccination: vaccination.rows[0] || null,
+      pesage: pesage.rows[0] || null,
+      produitsUtilises: produitsUtilises.rows,
       complete: mortalite.rows.length > 0 && sante.rows.length > 0 && alimentation.rows.length > 0,
     });
   } catch (erreur) {

@@ -1,5 +1,5 @@
 const express = require("express");
-const router = express.Router({ mergeParams: true }); // mergeParams : accès à :bandeId du routeur parent
+const router = express.Router({ mergeParams: true });
 const verifierToken = require("../middleware/auth");
 const verifierProprietaireBande = require("../middleware/verifierProprietaireBande");
 const {

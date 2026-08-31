@@ -1,7 +1,3 @@
-// Vérifie que la bande demandée (:bandeId dans l'URL) appartient bien
-// au poulailler de l'ouvrier connecté — empêche un ouvrier d'accéder
-// ou de modifier les données d'une bande qui n'est pas la sienne, même
-// en devinant un ID dans l'URL.
 const pool = require("../db/pool");
 const { obtenirPoulaillerOuvrier } = require("../utils/poulailler");
 

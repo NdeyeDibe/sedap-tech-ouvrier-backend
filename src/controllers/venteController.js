@@ -6,10 +6,10 @@ const pool = require("../db/pool");
 // ne dépasse jamais ce qui reste réellement disponible).
 async function getSujetsRestants(bandeId) {
   const resultatBande = await pool.query(
-    "SELECT poussins_recus FROM bandes WHERE id = $1",
+    "SELECT poussins_recus, morts_a_larrivee FROM bandes WHERE id = $1",
     [bandeId]
   );
-  const poussinsRecus = resultatBande.rows[0].poussins_recus;
+  const { poussins_recus: poussinsRecus, morts_a_larrivee: mortsALArrivee } = resultatBande.rows[0];
 
   const resultatMortalite = await pool.query(
     "SELECT COALESCE(SUM(mortalite), 0) AS total FROM saisies_mortalite WHERE bande_id = $1",
@@ -20,7 +20,9 @@ async function getSujetsRestants(bandeId) {
     [bandeId]
   );
 
-  const mortaliteTotale = parseInt(resultatMortalite.rows[0].total, 10);
+  // IMPORTANT : inclut morts_a_larrivee EN PLUS des saisies quotidiennes
+  // (sinon les morts à la réception des poussins ne comptent jamais).
+  const mortaliteTotale = mortsALArrivee + parseInt(resultatMortalite.rows[0].total, 10);
   const ventesTotales = parseInt(resultatVentes.rows[0].total, 10);
   return poussinsRecus - mortaliteTotale - ventesTotales;
 }
@@ -56,14 +58,14 @@ async function ajouterVente(req, res) {
     // autre transaction qui essaierait de vendre sur la MÊME bande en
     // même temps doit attendre que celle-ci se termine.
     const resultatBande = await client.query(
-      "SELECT poussins_recus FROM bandes WHERE id = $1 FOR UPDATE",
+      "SELECT poussins_recus, morts_a_larrivee FROM bandes WHERE id = $1 FOR UPDATE",
       [bandeId]
     );
     if (resultatBande.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ erreur: "Bande introuvable." });
     }
-    const poussinsRecus = resultatBande.rows[0].poussins_recus;
+    const { poussins_recus: poussinsRecus, morts_a_larrivee: mortsALArrivee } = resultatBande.rows[0];
 
     const resultatMortalite = await client.query(
       "SELECT COALESCE(SUM(mortalite), 0) AS total FROM saisies_mortalite WHERE bande_id = $1",
@@ -75,6 +77,7 @@ async function ajouterVente(req, res) {
     );
     const sujetsRestants =
       poussinsRecus -
+      mortsALArrivee -
       parseInt(resultatMortalite.rows[0].total, 10) -
       parseInt(resultatVentes.rows[0].total, 10);
 
@@ -150,7 +153,7 @@ async function getBilan(req, res) {
       numero: bande.numero,
       statut: bande.statut,
       poussinsRecus: bande.poussins_recus,
-      mortaliteTotale: parseInt(resultatMortalite.rows[0].total, 10),
+      mortaliteTotale: bande.morts_a_larrivee + parseInt(resultatMortalite.rows[0].total, 10),
       ventesTotales: parseInt(resultatVentes.rows[0].quantite, 10),
       recettesTotales: parseFloat(resultatVentes.rows[0].recettes),
       dureeJours: bande.duree_jours,
