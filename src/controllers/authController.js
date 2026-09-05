@@ -65,6 +65,26 @@ async function preInscrire(req, res) {
 // L'ouvrier définit son code PIN sur un compte DÉJÀ pré-enregistré par
 // le propriétaire (voir preInscrire ci-dessus) — ne crée jamais de
 // nouveau compte lui-même.
+// Vérifie si un numéro est reconnu AVANT de laisser l'ouvrier taper un
+// code (retour Ndeye : sans ça, on le laissait créer/confirmer un PIN
+// en entier avant de lui dire "numéro non reconnu" — confus et inutile).
+async function verifierTelephone(req, res) {
+  const { telephone } = req.params;
+  try {
+    const resultat = await pool.query(
+      "SELECT pin_hash FROM ouvriers WHERE telephone = $1",
+      [telephone]
+    );
+    if (resultat.rows.length === 0) {
+      return res.json({ existe: false, aDejaUnPin: false });
+    }
+    res.json({ existe: true, aDejaUnPin: !!resultat.rows[0].pin_hash });
+  } catch (erreur) {
+    console.error("Erreur vérification téléphone :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 async function creerPin(req, res) {
   const { telephone, pin } = req.body;
 
@@ -218,4 +238,4 @@ async function moi(req, res) {
   }
 }
 
-module.exports = { preInscrire, creerPin, connexion, moi };
+module.exports = { preInscrire, verifierTelephone, creerPin, connexion, moi };
