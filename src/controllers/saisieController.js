@@ -2,23 +2,24 @@ const pool = require("../db/pool");
 
 async function enregistrerMortalite(req, res) {
   const { bandeId } = req.params;
-  const { mortalite, nbPhotos } = req.body;
+  const { mortalite, photos } = req.body;
+  const urlsPhotos = Array.isArray(photos) ? photos : [];
 
   if (mortalite === undefined || mortalite < 0) {
     return res.status(400).json({ erreur: "La mortalité doit être un nombre positif ou nul." });
   }
-  if (mortalite > 0 && (!nbPhotos || nbPhotos < 1)) {
+  if (mortalite > 0 && urlsPhotos.length < 1) {
     return res.status(400).json({ erreur: "Au moins une photo est requise si mortalité > 0." });
   }
 
   try {
     const resultat = await pool.query(
-      `INSERT INTO saisies_mortalite (bande_id, date_saisie, mortalite, nb_photos)
+      `INSERT INTO saisies_mortalite (bande_id, date_saisie, mortalite, photos)
        VALUES ($1, CURRENT_DATE, $2, $3)
        ON CONFLICT (bande_id, date_saisie)
-       DO UPDATE SET mortalite = EXCLUDED.mortalite, nb_photos = EXCLUDED.nb_photos
+       DO UPDATE SET mortalite = EXCLUDED.mortalite, photos = EXCLUDED.photos
        RETURNING *`,
-      [bandeId, mortalite, nbPhotos || 0]
+      [bandeId, mortalite, urlsPhotos]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
@@ -29,23 +30,28 @@ async function enregistrerMortalite(req, res) {
 
 async function enregistrerSante(req, res) {
   const { bandeId } = req.params;
-  const { etat, aVocal, aPhoto } = req.body;
+  const { etat, aVocal, photos } = req.body;
+  const urlsPhotos = Array.isArray(photos) ? photos : [];
+
+  // TODO(debug) : journal temporaire pour diagnostiquer un rejet 400
+  // inattendu — à retirer une fois la cause trouvée.
+  console.log("DEBUG saisie santé reçue :", JSON.stringify({ etat, aVocal, photos, urlsPhotos }));
 
   if (!["bien", "anormal", "urgent"].includes(etat)) {
     return res.status(400).json({ erreur: "État invalide (bien, anormal ou urgent attendu)." });
   }
-  if (etat !== "bien" && !aVocal && !aPhoto) {
+  if (etat !== "bien" && !aVocal && urlsPhotos.length === 0) {
     return res.status(400).json({ erreur: "Une preuve (photo ou vocal) est requise pour Anormal/Urgent." });
   }
 
   try {
     const resultat = await pool.query(
-      `INSERT INTO saisies_sante (bande_id, date_saisie, etat, a_vocal, a_photo)
+      `INSERT INTO saisies_sante (bande_id, date_saisie, etat, a_vocal, photos)
        VALUES ($1, CURRENT_DATE, $2, $3, $4)
        ON CONFLICT (bande_id, date_saisie)
-       DO UPDATE SET etat = EXCLUDED.etat, a_vocal = EXCLUDED.a_vocal, a_photo = EXCLUDED.a_photo
+       DO UPDATE SET etat = EXCLUDED.etat, a_vocal = EXCLUDED.a_vocal, photos = EXCLUDED.photos
        RETURNING *`,
-      [bandeId, etat, aVocal || false, aPhoto || false]
+      [bandeId, etat, aVocal || false, urlsPhotos]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
