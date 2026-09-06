@@ -10,6 +10,7 @@
   },
   "license": "ISC",
   "dependencies": {
+    "@simplewebauthn/server": "^14.0.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "16.4.5",

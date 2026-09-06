@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS ouvriers (
 );
 
 -- ============================================================
+-- CREDENTIALS_WEBAUTHN — clés Face ID / empreinte digitale
+-- enregistrées par un ouvrier pour se connecter sans retaper son PIN
+-- (CDC : confort d'usage, le PIN reste toujours disponible en repli).
+-- Une même personne peut en avoir plusieurs (ex: change de téléphone).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS credentials_webauthn (
+  id SERIAL PRIMARY KEY,
+  ouvrier_id INT NOT NULL REFERENCES ouvriers(id) ON DELETE CASCADE,
+  identifiant_credential TEXT UNIQUE NOT NULL, -- fourni par le téléphone, encodé base64url
+  cle_publique TEXT NOT NULL, -- clé publique, encodée base64url (jamais la biométrie elle-même)
+  compteur BIGINT NOT NULL DEFAULT 0, -- protection anti-rejeu fournie par WebAuthn
+  cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ============================================================
 -- POULAILLERS — un ouvrier gère un poulailler (CDC : "un seul
 -- poulailler = un seul ouvrier = une seule bande active à la fois")
 -- ============================================================
@@ -70,7 +85,7 @@ CREATE TABLE IF NOT EXISTS saisies_mortalite (
   bande_id INT NOT NULL REFERENCES bandes(id) ON DELETE CASCADE,
   date_saisie DATE NOT NULL DEFAULT CURRENT_DATE,
   mortalite INT NOT NULL DEFAULT 0,
-  nb_photos INT NOT NULL DEFAULT 0, -- fichiers réels gérés à part (Cloudinary, TODO)
+  photos TEXT[] NOT NULL DEFAULT '{}', -- liste de vraies URLs Cloudinary
   cree_le TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (bande_id, date_saisie) -- une seule saisie mortalité par jour et par bande
 );
@@ -81,7 +96,7 @@ CREATE TABLE IF NOT EXISTS saisies_sante (
   date_saisie DATE NOT NULL DEFAULT CURRENT_DATE,
   etat VARCHAR(20) NOT NULL CHECK (etat IN ('bien', 'anormal', 'urgent')),
   a_vocal BOOLEAN NOT NULL DEFAULT FALSE,
-  a_photo BOOLEAN NOT NULL DEFAULT FALSE,
+  photos TEXT[] NOT NULL DEFAULT '{}', -- liste de vraies URLs Cloudinary
   cree_le TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (bande_id, date_saisie)
 );
