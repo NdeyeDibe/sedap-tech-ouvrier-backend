@@ -72,13 +72,29 @@ async function verifierTelephone(req, res) {
   const { telephone } = req.params;
   try {
     const resultat = await pool.query(
-      "SELECT pin_hash FROM ouvriers WHERE telephone = $1",
+      "SELECT id, pin_hash FROM ouvriers WHERE telephone = $1",
       [telephone]
     );
     if (resultat.rows.length === 0) {
-      return res.json({ existe: false, aDejaUnPin: false });
+      return res.json({ existe: false, aDejaUnPin: false, aUnPasskey: false });
     }
-    res.json({ existe: true, aDejaUnPin: !!resultat.rows[0].pin_hash });
+    const ouvrier = resultat.rows[0];
+
+    // IMPORTANT : la vraie source de vérité pour "Face ID est-il
+    // activé pour ce compte ?" est ICI (en base), pas un simple repère
+    // stocké sur le téléphone — sinon, effacer les données du site (ou
+    // changer d'appareil) fait perdre l'accès à Face ID pour de bon,
+    // alors que la clé existe toujours réellement (bug trouvé en test).
+    const resultatPasskey = await pool.query(
+      "SELECT 1 FROM credentials_webauthn WHERE ouvrier_id = $1 LIMIT 1",
+      [ouvrier.id]
+    );
+
+    res.json({
+      existe: true,
+      aDejaUnPin: !!ouvrier.pin_hash,
+      aUnPasskey: resultatPasskey.rows.length > 0,
+    });
   } catch (erreur) {
     console.error("Erreur vérification téléphone :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
