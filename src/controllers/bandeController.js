@@ -48,7 +48,7 @@ async function listerBandes(req, res) {
 
     const resultat = await pool.query(
       `SELECT *,
-        EXTRACT(DAY FROM COALESCE(date_fin, now()) - date_debut)::int + 1 AS jour_actuel
+        (COALESCE(date_fin, now())::date - date_debut::date)::int + 1 AS jour_actuel
        FROM bandes
        WHERE poulailler_id = $1
        ORDER BY numero DESC`,
@@ -70,8 +70,16 @@ async function bandeActive(req, res) {
     }
 
     const resultatBande = await pool.query(
+      // IMPORTANT : différence de DATES civiles (::date), pas d'heures
+      // écoulées — le jour doit changer au passage de minuit, peu importe
+      // l'heure exacte à laquelle la bande a été créée (ex: créée à 18h,
+      // le jour doit quand même devenir "Jour 2" dès le lendemain à
+      // 00h00, pas seulement 24h plus tard à 18h). Bug trouvé en test :
+      // l'ancien calcul (EXTRACT(DAY FROM intervalle)) comptait des
+      // périodes de 24h pleines, ce qui gardait "Jour 1" affiché toute la
+      // matinée du lendemain si la bande avait été créée l'après-midi.
       `SELECT *,
-        EXTRACT(DAY FROM now() - date_debut)::int + 1 AS jour_actuel
+        (now()::date - date_debut::date)::int + 1 AS jour_actuel
        FROM bandes
        WHERE poulailler_id = $1 AND statut = 'en_cours'
        LIMIT 1`,
@@ -173,7 +181,7 @@ async function forcerJourPourTest(req, res) {
     const resultat = await pool.query(
       `UPDATE bandes SET date_debut = now() - ($1 - 1) * INTERVAL '1 day'
        WHERE id = $2 AND poulailler_id = $3
-       RETURNING *, EXTRACT(DAY FROM now() - date_debut)::int + 1 AS jour_actuel`,
+       RETURNING *, (now()::date - date_debut::date)::int + 1 AS jour_actuel`,
       [jour, id, poulaillerId]
     );
     if (resultat.rows.length === 0) {

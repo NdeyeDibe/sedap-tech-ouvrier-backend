@@ -131,7 +131,7 @@ async function getBilan(req, res) {
   const { bandeId } = req.params;
   try {
     const resultatBande = await pool.query(
-      `SELECT *, EXTRACT(DAY FROM COALESCE(date_fin, now()) - date_debut)::int + 1 AS duree_jours
+      `SELECT *, (COALESCE(date_fin, now())::date - date_debut::date)::int + 1 AS duree_jours
        FROM bandes WHERE id = $1`,
       [bandeId]
     );
