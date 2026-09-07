@@ -33,10 +33,6 @@ async function enregistrerSante(req, res) {
   const { etat, aVocal, photos } = req.body;
   const urlsPhotos = Array.isArray(photos) ? photos : [];
 
-  // TODO(debug) : journal temporaire pour diagnostiquer un rejet 400
-  // inattendu — à retirer une fois la cause trouvée.
-  console.log("DEBUG saisie santé reçue :", JSON.stringify({ etat, aVocal, photos, urlsPhotos }));
-
   if (!["bien", "anormal", "urgent"].includes(etat)) {
     return res.status(400).json({ erreur: "État invalide (bien, anormal ou urgent attendu)." });
   }
