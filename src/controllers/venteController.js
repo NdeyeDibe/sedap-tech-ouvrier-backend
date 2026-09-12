@@ -44,10 +44,17 @@ async function getSujetsRestants(bandeId) {
 // d'interfaces qui vendent en parallèle.
 async function ajouterVente(req, res) {
   const { bandeId } = req.params;
-  const { nomClient, telephoneClient, prixUnitaire, quantite } = req.body;
+  const { typeVente, nomClient, telephoneClient, prixUnitaire, quantite } = req.body;
+  const type = typeVente === "ramassage" ? "ramassage" : "ferme";
 
-  if (!nomClient || !prixUnitaire || prixUnitaire <= 0 || !quantite || quantite <= 0) {
-    return res.status(400).json({ erreur: "Nom du client, prix unitaire et quantité (positifs) sont requis." });
+  if (!nomClient || !quantite || quantite <= 0) {
+    return res.status(400).json({ erreur: "Nom et quantité (positive) sont requis." });
+  }
+  // Le prix n'est exigé QUE pour une vente à la ferme — pour un
+  // ramassage, il est encore inconnu (le Propriétaire le renseignera
+  // plus tard en détaillant le lot, retour Mengué sept. 2026).
+  if (type === "ferme" && (!prixUnitaire || prixUnitaire <= 0)) {
+    return res.status(400).json({ erreur: "Le prix unitaire (positif) est requis pour une vente à la ferme." });
   }
 
   const client = await pool.connect();
@@ -93,9 +100,9 @@ async function ajouterVente(req, res) {
       // pourra aussi vendre depuis sa propre interface, ce sera un
       // endpoint distinct qui renseignera auteur_type='proprietaire' à
       // la place (retour Mengué : traçabilité de qui a fait quelle vente).
-      `INSERT INTO ventes (bande_id, nom_client, telephone_client, prix_unitaire, quantite, auteur_type, auteur_ouvrier_id)
-       VALUES ($1, $2, $3, $4, $5, 'ouvrier', $6) RETURNING *`,
-      [bandeId, nomClient.trim(), telephoneClient || null, prixUnitaire, quantite, req.ouvrierId]
+      `INSERT INTO ventes (bande_id, type_vente, nom_client, telephone_client, prix_unitaire, quantite, auteur_type, auteur_ouvrier_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 'ouvrier', $7) RETURNING *`,
+      [bandeId, type, nomClient.trim(), telephoneClient || null, type === "ferme" ? prixUnitaire : null, quantite, req.ouvrierId]
     );
 
     await client.query("COMMIT");
@@ -122,7 +129,11 @@ async function listerVentes(req, res) {
       [bandeId]
     );
     const totalVendu = resultat.rows.reduce((s, v) => s + v.quantite, 0);
-    const totalRecettes = resultat.rows.reduce((s, v) => s + v.quantite * parseFloat(v.prix_unitaire), 0);
+    // .filter(Boolean) écarte les ventes par ramassage (prix_unitaire
+    // encore NULL, pas détaillées par le Propriétaire) — sans ça, un
+    // seul NaN (quantite * NaN) contamine tout le total (bug trouvé en
+    // test : totalRecettes devenait "null" dès qu'un ramassage existait).
+    const totalRecettes = resultat.rows.reduce((s, v) => s + v.quantite * (parseFloat(v.prix_unitaire) || 0), 0);
     const sujetsRestants = await getSujetsRestants(bandeId);
 
     res.json({ ventes: resultat.rows, totalVendu, totalRecettes, sujetsRestants });

@@ -197,9 +197,17 @@ CREATE TABLE IF NOT EXISTS stock_autres_produits (
 CREATE TABLE IF NOT EXISTS ventes (
   id SERIAL PRIMARY KEY,
   bande_id INT NOT NULL REFERENCES bandes(id) ON DELETE CASCADE,
-  nom_client VARCHAR(150) NOT NULL,
+  -- "ferme" : client lambda venu acheter directement (règles inchangées).
+  -- "ramassage" : lot entier remis à un ramasseur/grossiste (ou au
+  -- propriétaire) — l'ouvrier ne connaît ni le prix final ni le détail
+  -- des reventes ; c'est au Propriétaire de "déclater" ce lot en ventes
+  -- détaillées plus tard, depuis SON interface (retour Mengué, sept.
+  -- 2026). D'où prix_unitaire désormais NULLABLE : inconnu tant que ce
+  -- n'est pas fait.
+  type_vente VARCHAR(20) NOT NULL DEFAULT 'ferme' CHECK (type_vente IN ('ferme', 'ramassage')),
+  nom_client VARCHAR(150) NOT NULL, -- nom du client OU du ramasseur/destinataire selon le type
   telephone_client VARCHAR(20),
-  prix_unitaire NUMERIC(10,2) NOT NULL,
+  prix_unitaire NUMERIC(10,2), -- NULL tant qu'un ramassage n'a pas été détaillé par le Propriétaire
   quantite INT NOT NULL,
   date_vente TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Traçabilité de l'auteur (retour Mengué, sept. 2026) : le Propriétaire
