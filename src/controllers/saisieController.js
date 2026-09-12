@@ -114,8 +114,15 @@ async function getSaisieDuJour(req, res) {
       pool.query("SELECT * FROM vaccinations WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query("SELECT * FROM pesages WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query(
-        `SELECT pu.*, sp.nom, sp.produit_id, sp.variante_id FROM produits_utilises pu
-         JOIN stock_produits sp ON sp.id = pu.stock_produit_id
+        // LEFT JOIN sur les 2 tables possibles (produit standard OU
+        // "Autre") — COALESCE prend celui qui n'est pas NULL. Avant,
+        // un JOIN simple sur stock_produits excluait purement et
+        // simplement toute ligne "Autre" de cet écran (bug trouvé en
+        // test par Ndeye).
+        `SELECT pu.*, COALESCE(sp.nom, sap.nom) AS nom, sp.produit_id, sp.variante_id
+         FROM produits_utilises pu
+         LEFT JOIN stock_produits sp ON sp.id = pu.stock_produit_id
+         LEFT JOIN stock_autres_produits sap ON sap.id = pu.stock_autre_produit_id
          WHERE pu.bande_id = $1 AND pu.date_saisie = CURRENT_DATE`,
         [bandeId]
       ),

@@ -144,6 +144,34 @@ async function enregistrerProduitsUtilises(req, res) {
 
     const lignesTraitees = [];
     for (const ligne of lignes) {
+      // Retour Ndeye : la catégorie "Autre" (nom libre, table à part
+      // stock_autres_produits) était jusqu'ici impossible à déclarer ici
+      // — chaque ligne précise maintenant explicitement de laquelle des
+      // deux tables il s'agit.
+      if (ligne.estAutre) {
+        const resultatStock = await client.query(
+          "SELECT id, quantite FROM stock_autres_produits WHERE id = $1 AND poulailler_id = $2",
+          [ligne.autreProduitId, poulaillerId]
+        );
+        if (resultatStock.rows.length === 0) {
+          throw { statut: 400, message: `Produit "Autre" introuvable (id ${ligne.autreProduitId}).` };
+        }
+        const stock = resultatStock.rows[0];
+        if (stock.quantite < ligne.quantite) {
+          throw { statut: 409, message: `Stock insuffisant (${stock.quantite} disponible).` };
+        }
+
+        await client.query("UPDATE stock_autres_produits SET quantite = quantite - $1 WHERE id = $2", [ligne.quantite, stock.id]);
+
+        const resultatLigne = await client.query(
+          `INSERT INTO produits_utilises (bande_id, stock_autre_produit_id, quantite, date_saisie)
+           VALUES ($1, $2, $3, CURRENT_DATE) RETURNING *`,
+          [bandeId, stock.id, ligne.quantite]
+        );
+        lignesTraitees.push(resultatLigne.rows[0]);
+        continue;
+      }
+
       const resultatStock = await client.query(
         "SELECT id, quantite FROM stock_produits WHERE poulailler_id = $1 AND produit_id = $2 AND variante_id = $3",
         [poulaillerId, ligne.produitId, ligne.varianteId]

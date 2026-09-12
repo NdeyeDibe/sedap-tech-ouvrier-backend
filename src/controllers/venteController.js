@@ -87,9 +87,15 @@ async function ajouterVente(req, res) {
     }
 
     const resultat = await client.query(
-      `INSERT INTO ventes (bande_id, nom_client, telephone_client, prix_unitaire, quantite)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [bandeId, nomClient.trim(), telephoneClient || null, prixUnitaire, quantite]
+      // auteur_type='ouvrier' et auteur_ouvrier_id=req.ouvrierId : cette
+      // route n'est aujourd'hui appelable que par un ouvrier connecté
+      // (voir verifierToken sur la route) — le jour où le Propriétaire
+      // pourra aussi vendre depuis sa propre interface, ce sera un
+      // endpoint distinct qui renseignera auteur_type='proprietaire' à
+      // la place (retour Mengué : traçabilité de qui a fait quelle vente).
+      `INSERT INTO ventes (bande_id, nom_client, telephone_client, prix_unitaire, quantite, auteur_type, auteur_ouvrier_id)
+       VALUES ($1, $2, $3, $4, $5, 'ouvrier', $6) RETURNING *`,
+      [bandeId, nomClient.trim(), telephoneClient || null, prixUnitaire, quantite, req.ouvrierId]
     );
 
     await client.query("COMMIT");

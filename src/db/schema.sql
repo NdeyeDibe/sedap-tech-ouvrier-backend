@@ -167,10 +167,18 @@ CREATE TABLE IF NOT EXISTS stock_receptions (
 CREATE TABLE IF NOT EXISTS produits_utilises (
   id SERIAL PRIMARY KEY,
   bande_id INT NOT NULL REFERENCES bandes(id) ON DELETE CASCADE,
-  stock_produit_id INT NOT NULL REFERENCES stock_produits(id),
+  -- Exactement UN des deux doit être renseigné (jamais les deux, jamais
+  -- aucun) — retour Ndeye : la catégorie "Autre" (nom libre, table à
+  -- part) n'était jusqu'ici jamais utilisable ici, oubli corrigé.
+  stock_produit_id INT REFERENCES stock_produits(id),
+  stock_autre_produit_id INT REFERENCES stock_autres_produits(id),
   quantite NUMERIC(10,2) NOT NULL,
   date_saisie DATE NOT NULL DEFAULT CURRENT_DATE,
-  cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+  cree_le TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT un_seul_type_de_produit CHECK (
+    (stock_produit_id IS NOT NULL AND stock_autre_produit_id IS NULL) OR
+    (stock_produit_id IS NULL AND stock_autre_produit_id IS NOT NULL)
+  )
 );
 
 -- "Autres produits" (nom libre, CDC VIII.2)
@@ -193,5 +201,12 @@ CREATE TABLE IF NOT EXISTS ventes (
   telephone_client VARCHAR(20),
   prix_unitaire NUMERIC(10,2) NOT NULL,
   quantite INT NOT NULL,
-  date_vente TIMESTAMPTZ NOT NULL DEFAULT now()
+  date_vente TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Traçabilité de l'auteur (retour Mengué, sept. 2026) : le Propriétaire
+  -- pourra lui aussi enregistrer des ventes une fois son interface prête
+  -- — il faut donc déjà savoir QUI a fait quelle vente, pour que chacun
+  -- ne puisse modifier que les siennes. Pas de clé étrangère vers une
+  -- table "proprietaires" pour l'instant (elle n'existe pas encore).
+  auteur_type VARCHAR(20) NOT NULL DEFAULT 'ouvrier' CHECK (auteur_type IN ('ouvrier', 'proprietaire')),
+  auteur_ouvrier_id INT REFERENCES ouvriers(id)
 );
