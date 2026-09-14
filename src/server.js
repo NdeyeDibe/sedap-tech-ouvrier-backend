@@ -10,6 +10,7 @@ const saisieRoutes = require("./routes/saisieRoutes");
 const stockRoutes = require("./routes/stockRoutes");
 const suiviRoutes = require("./routes/suiviRoutes");
 const venteRoutes = require("./routes/venteRoutes");
+const proprietaireAuthRoutes = require("./routes/proprietaireAuthRoutes");
 
 const app = express();
 
@@ -31,6 +32,13 @@ app.use("/api/bandes/:bandeId/saisies", saisieRoutes);
 app.use("/api/bandes/:bandeId", suiviRoutes);
 app.use("/api/bandes/:bandeId", venteRoutes);
 app.use("/api/stock", stockRoutes);
+
+// Interface propriétaire. Préfixe distinct de /api/auth : les deux rôles
+// ne s'authentifient pas de la même façon — le propriétaire n'a pas de
+// pré-inscription, et s'identifie par téléphone OU e-mail.
+app.use("/api/proprietaire/auth", proprietaireAuthRoutes);
+app.use("/api/proprietaire/auth", proprietaireAuthRoutes);
+app.use("/api/proprietaire", require("./routes/proprietaireRoutes"));
 
 app.use((err, req, res, next) => {
   console.error("Erreur non gérée :", err);

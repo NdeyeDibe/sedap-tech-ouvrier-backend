@@ -1,4 +1,4 @@
--- Schéma de base de données — SEDAP'Tech (interface ouvrier)
+-- Schéma de base de données — SEDAP'Tech
 -- Reprend fidèlement toute la logique déjà construite côté frontend
 -- (actuellement simulée avec des données factices en mémoire dans
 -- src/lib/*Mock.js et *Store.js du projet React).
@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS ouvriers (
   id SERIAL PRIMARY KEY,
   telephone VARCHAR(20) UNIQUE NOT NULL,
   -- pin_hash est NULL tant que l'ouvrier n'a pas encore créé son code :
-  -- le compte est d'abord créé par le PROPRIÉTAIRE (nom, prénom,
-  -- téléphone) depuis SON interface — l'ouvrier ne fait que définir son
-  -- PIN sur ce compte déjà existant, jamais créer un compte lui-même.
+  -- le compte est d'abord créé par SEDAP (nom, prénom, téléphone) depuis
+  -- l'interface admin — l'ouvrier ne fait que définir son PIN sur ce
+  -- compte déjà existant, jamais créer un compte lui-même.
   pin_hash VARCHAR(255), -- jamais le PIN en clair, toujours haché (bcrypt)
   nom VARCHAR(100),
   prenom VARCHAR(100),
@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS credentials_webauthn (
 );
 
 -- ============================================================
--- POULAILLERS — un ouvrier gère un poulailler (CDC : "un seul
--- poulailler = un seul ouvrier = une seule bande active à la fois")
+-- POULAILLERS — un ouvrier responsable gère un poulailler (CDC :
+-- "un seul poulailler = un seul ouvrier = une seule bande active")
 -- ============================================================
 CREATE TABLE IF NOT EXISTS poulaillers (
   id SERIAL PRIMARY KEY,
@@ -162,6 +162,18 @@ CREATE TABLE IF NOT EXISTS stock_receptions (
   date_reception TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- "Autres produits" (nom libre, CDC VIII.2)
+-- DOIT être déclarée AVANT produits_utilises, qui la référence :
+-- PostgreSQL exige que la table cible d'une clé étrangère existe déjà.
+CREATE TABLE IF NOT EXISTS stock_autres_produits (
+  id SERIAL PRIMARY KEY,
+  poulailler_id INT NOT NULL REFERENCES poulaillers(id) ON DELETE CASCADE,
+  nom VARCHAR(150) NOT NULL,
+  quantite NUMERIC(10,2) NOT NULL,
+  prix_unitaire NUMERIC(10,2) NOT NULL,
+  date_reception TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- "Produits utilisés" (Gaz/Litière/Vitamines/Antistress/Vaccin
 -- consommés au quotidien, hors aliment — écran séparé, cf décision Ndeye)
 CREATE TABLE IF NOT EXISTS produits_utilises (
@@ -179,16 +191,6 @@ CREATE TABLE IF NOT EXISTS produits_utilises (
     (stock_produit_id IS NOT NULL AND stock_autre_produit_id IS NULL) OR
     (stock_produit_id IS NULL AND stock_autre_produit_id IS NOT NULL)
   )
-);
-
--- "Autres produits" (nom libre, CDC VIII.2)
-CREATE TABLE IF NOT EXISTS stock_autres_produits (
-  id SERIAL PRIMARY KEY,
-  poulailler_id INT NOT NULL REFERENCES poulaillers(id) ON DELETE CASCADE,
-  nom VARCHAR(150) NOT NULL,
-  quantite NUMERIC(10,2) NOT NULL,
-  prix_unitaire NUMERIC(10,2) NOT NULL,
-  date_reception TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ============================================================
@@ -213,8 +215,8 @@ CREATE TABLE IF NOT EXISTS ventes (
   -- Traçabilité de l'auteur (retour Mengué, sept. 2026) : le Propriétaire
   -- pourra lui aussi enregistrer des ventes une fois son interface prête
   -- — il faut donc déjà savoir QUI a fait quelle vente, pour que chacun
-  -- ne puisse modifier que les siennes. Pas de clé étrangère vers une
-  -- table "proprietaires" pour l'instant (elle n'existe pas encore).
+  -- ne puisse modifier que les siennes. La clé étrangère vers
+  -- "proprietaires" est ajoutée par 002_proprietaire.sql.
   auteur_type VARCHAR(20) NOT NULL DEFAULT 'ouvrier' CHECK (auteur_type IN ('ouvrier', 'proprietaire')),
   auteur_ouvrier_id INT REFERENCES ouvriers(id)
 );

@@ -2,6 +2,10 @@ const pool = require("../db/pool");
 const { obtenirPoulaillerOuvrier } = require("../utils/poulailler");
 const { getSujetsRestants } = require("./venteController");
 
+// Jour à partir duquel la vente peut s'ouvrir. Les premiers sujets atteignent
+// alors leur poids ; les autres suivront sur plusieurs jours.
+const JOUR_OUVERTURE_VENTE = 25;
+
 async function creerBande(req, res) {
   const { poussinsCommandes, poussinsRecus, mortsALArrivee, provenance, souche, poidsReceptionG } = req.body;
 
@@ -32,7 +36,9 @@ async function creerBande(req, res) {
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
     if (erreur.code === "23505") {
-      return res.status(409).json({ erreur: "Une bande est déjà en cours pour ce poulailler. Terminez-la avant d'en créer une nouvelle." });
+      return res.status(409).json({
+        erreur: "Une bande est déjà active pour ce poulailler. Vendez tous ses sujets avant d'en démarrer une nouvelle.",
+      });
     }
     console.error("Erreur création bande :", erreur);
     res.status(500).json({ erreur: "Erreur serveur pendant la création de la bande." });
@@ -78,10 +84,15 @@ async function bandeActive(req, res) {
       // l'ancien calcul (EXTRACT(DAY FROM intervalle)) comptait des
       // périodes de 24h pleines, ce qui gardait "Jour 1" affiché toute la
       // matinée du lendemain si la bande avait été créée l'après-midi.
+      //
+      // La condition porte sur "pas terminée" et non sur "en_cours" : une
+      // bande en phase de vente reste active. Les sujets restants meurent
+      // encore et consomment toujours aliment et gaz, donc les saisies
+      // quotidiennes continuent jusqu'au dernier sujet vendu.
       `SELECT *,
         (now()::date - date_debut::date)::int + 1 AS jour_actuel
        FROM bandes
-       WHERE poulailler_id = $1 AND statut = 'en_cours'
+       WHERE poulailler_id = $1 AND statut <> 'terminee'
        LIMIT 1`,
       [poulaillerId]
     );
@@ -108,41 +119,121 @@ async function bandeActive(req, res) {
     const ventesTotales = parseInt(resultatVentes.rows[0].total, 10);
     const sujetsRestants = bande.poussins_recus - mortaliteTotale - ventesTotales;
 
-    res.json({ ...bande, mortalite_totale: mortaliteTotale, ventes_totales: ventesTotales, sujets_restants: sujetsRestants });
+    res.json({
+      ...bande,
+      mortalite_totale: mortaliteTotale,
+      ventes_totales: ventesTotales,
+      sujets_restants: sujetsRestants,
+      // Dit à l'interface si le bouton « Démarrer la vente » doit s'activer.
+      vente_ouvrable:
+        bande.statut === "en_cours" && bande.jour_actuel >= JOUR_OUVERTURE_VENTE,
+      jour_ouverture_vente: JOUR_OUVERTURE_VENTE,
+    });
   } catch (erreur) {
     console.error("Erreur bande active :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
   }
 }
 
-async function terminerBande(req, res) {
+/**
+ * Ouvre la phase de vente.
+ *
+ * Ce bouton s'appelait « Terminer la bande » et clôturait tout. C'était une
+ * erreur de modèle : au jour 25, seuls quelques sujets ont le poids. Les
+ * autres suivent sur plusieurs jours, pendant lesquels des sujets meurent
+ * encore et ceux qui restent continuent de manger.
+ *
+ * La bande n'est donc pas close ici : elle entre en commercialisation. Sa
+ * clôture est automatique, dès qu'il ne reste plus rien dans le poulailler —
+ * un déclencheur en base s'en charge, l'ouvrier n'a pas à y penser.
+ */
+async function demarrerVente(req, res) {
   const { id } = req.params;
   const client = await pool.connect();
+
   try {
     const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
 
     await client.query("BEGIN");
-
-    // Même verrou que ajouterVente (venteController.js) sur la ligne de
-    // la bande — empêche qu'une vente lancée EXACTEMENT en même temps
-    // (depuis l'ouvrier ou depuis la future interface propriétaire)
-    // passe entre la vérification et la clôture, ce qui laisserait des
-    // sujets non vendus sur une bande pourtant marquée "terminée".
     await client.query("SELECT id FROM bandes WHERE id = $1 FOR UPDATE", [id]);
 
-    // CDC IX.2 : clôture définitive possible SEULEMENT si tous les
-    // sujets ont été vendus (sujets_à_vendre = 0) — revérifié ici côté
-    // serveur, pas seulement côté interface.
+    const verif = await client.query(
+      `SELECT statut, (now()::date - date_debut::date)::int + 1 AS jour_actuel
+         FROM bandes WHERE id = $1 AND poulailler_id = $2`,
+      [id, poulaillerId]
+    );
+
+    if (verif.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Bande introuvable." });
+    }
+
+    const { statut, jour_actuel } = verif.rows[0];
+
+    if (statut === "en_vente") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ erreur: "La vente est déjà ouverte sur cette bande." });
+    }
+    if (statut === "terminee") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ erreur: "Cette bande est terminée." });
+    }
+
+    if (jour_actuel < JOUR_OUVERTURE_VENTE) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        erreur: `La vente s'ouvre au jour ${JOUR_OUVERTURE_VENTE}. La bande en est au jour ${jour_actuel}.`,
+      });
+    }
+
+    const resultat = await client.query(
+      `UPDATE bandes
+          SET statut = 'en_vente', date_debut_vente = now()
+        WHERE id = $1 AND poulailler_id = $2 AND statut = 'en_cours'
+        RETURNING *`,
+      [id, poulaillerId]
+    );
+
+    await client.query("COMMIT");
+    res.json(resultat.rows[0]);
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur ouverture de la vente :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Clôture manuelle — filet de sécurité.
+ *
+ * Normalement inutile : la base clôt la bande dès que le poulailler est vide.
+ * Reste là pour les cas où des sujets disparaissent sans passer par une vente
+ * (perte, don, erreur de saisie) et où la bande ne se fermerait jamais seule.
+ */
+async function terminerBande(req, res) {
+  const { id } = req.params;
+  const client = await pool.connect();
+
+  try {
+    const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
+
+    await client.query("BEGIN");
+    await client.query("SELECT id FROM bandes WHERE id = $1 FOR UPDATE", [id]);
+
     const sujetsRestants = await getSujetsRestants(id);
     if (sujetsRestants > 0) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ erreur: `Il reste ${sujetsRestants} sujet(s) à vendre avant de pouvoir clôturer la bande.` });
+      return res.status(409).json({
+        erreur: `Il reste ${sujetsRestants} sujet(s) à vendre avant de pouvoir clôturer la bande.`,
+      });
     }
 
     const resultat = await client.query(
       `UPDATE bandes SET statut = 'terminee', date_fin = now()
-       WHERE id = $1 AND poulailler_id = $2 AND statut = 'en_cours'
-       RETURNING *`,
+        WHERE id = $1 AND poulailler_id = $2 AND statut <> 'terminee'
+        RETURNING *`,
       [id, poulaillerId]
     );
 
@@ -167,7 +258,7 @@ async function terminerBande(req, res) {
 // date_debut (vraie date, pas une valeur qu'on peut juste changer) —
 // cet endpoint recule artificiellement date_debut pour simuler "on est
 // au jour X", utile pour tester rapidement les bandeaux Vaccin/Pesage
-// ou le bouton "Terminer la bande" sans attendre le vrai nombre de jours.
+// ou l'ouverture de la vente sans attendre le vrai nombre de jours.
 async function forcerJourPourTest(req, res) {
   const { id } = req.params;
   const { jour } = req.body;
@@ -194,4 +285,12 @@ async function forcerJourPourTest(req, res) {
   }
 }
 
-module.exports = { creerBande, listerBandes, bandeActive, terminerBande, forcerJourPourTest };
+module.exports = {
+  creerBande,
+  listerBandes,
+  bandeActive,
+  demarrerVente,
+  terminerBande,
+  forcerJourPourTest,
+  JOUR_OUVERTURE_VENTE,
+};
