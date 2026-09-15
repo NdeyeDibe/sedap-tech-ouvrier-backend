@@ -481,7 +481,7 @@ async function historiqueSaisies(req, res) {
 // accéder, on ne renvoie que leurs adresses.
 const REQUETE_PHOTOS = `
   SELECT sm.date_saisie, sm.mortalite, sm.photos,
-         ss.etat, ss.a_vocal, ss.photos AS photos_sante
+         ss.etat, ss.a_vocal, ss.vocal_url, ss.photos AS photos_sante
     FROM saisies_mortalite sm
     LEFT JOIN saisies_sante ss
       ON ss.bande_id = sm.bande_id AND ss.date_saisie = sm.date_saisie
@@ -508,10 +508,11 @@ async function photosMortalite(req, res) {
       libelle: libelleJour(saisie.date_saisie),
       morts: Number(saisie.mortalite),
       etat: saisie.etat ?? "bien",
-      // Le CDC prévoyait un texte ; la maquette montre un vocal. Le champ
-      // a_vocal dit seulement qu'il en existe un — l'adresse du fichier
-      // viendra quand l'envoi des vocaux sera en place côté ouvrier.
+      // Le CDC prévoyait un texte, la maquette montre un vocal.
+      // vocal_url est nul sur les saisies antérieures à son ajout : le
+      // vocal a existé, mais n'a jamais quitté le téléphone de l'ouvrier.
       aVocal: saisie.a_vocal ?? false,
+      vocalUrl: saisie.vocal_url ?? null,
       photos: photos.map((url, i) => ({ numero: i + 1, url })),
       photosSante: saisie.photos_sante ?? [],
     });
