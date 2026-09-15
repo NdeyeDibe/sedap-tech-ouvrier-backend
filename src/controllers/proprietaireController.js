@@ -243,6 +243,27 @@ const REQUETE_PROGRAMME = `
    ORDER BY ordre
 `;
 
+// Ce que la bande a coûté jusqu'ici. Les dépenses sont définitives dès
+// qu'elles sont engagées — contrairement aux recettes, qui bougent tant que
+// la vente court. Les montrer en temps réel permet au propriétaire de
+// recouper chaque achat le jour même, au lieu de le découvrir au bilan.
+const LIBELLE_POSTE = {
+  aliment: 'Aliment',
+  gaz: 'Gaz',
+  litiere: 'Litière',
+  vitamines: 'Vitamines',
+  antistress: 'Antistress',
+  vaccin: 'Médicaments & vaccins',
+  autres: 'Autres produits',
+};
+
+const REQUETE_DEPENSES = `
+  SELECT poste, quantite, cout
+    FROM depenses_bandes
+   WHERE bande_id = $1
+   ORDER BY cout DESC
+`;
+
 const REQUETE_STOCK = `
   SELECT produit_id, variante_id, nom, unite, quantite
     FROM stock_produits
@@ -291,16 +312,18 @@ async function detailPoulailler(req, res) {
         bandeActive: null,
         saisies: [],
         programme: [],
+        depenses: { lignes: [], total: 0 },
         stock: [],
         alertes: [],
         statut: "ok",
       });
     }
 
-    const [saisies, programme, stock] = await Promise.all([
+    const [saisies, programme, stock, depenses] = await Promise.all([
       pool.query(REQUETE_SAISIES, [ligne.bande_id, 10]),
       pool.query(REQUETE_PROGRAMME, [ligne.bande_id]),
       pool.query(REQUETE_STOCK, [ligne.poulailler_id]),
+      pool.query(REQUETE_DEPENSES, [ligne.bande_id]),
     ]);
 
     // Seuls les vaccins déclenchent l'alerte du CDC : les traitements
@@ -373,6 +396,16 @@ async function detailPoulailler(req, res) {
         dateFaite: p.date_faite,
         enRetard: p.en_retard,
       })),
+
+      depenses: {
+        lignes: depenses.rows.map((d) => ({
+          poste: d.poste,
+          libelle: LIBELLE_POSTE[d.poste] ?? d.poste,
+          quantite: Number(d.quantite),
+          cout: Number(d.cout),
+        })),
+        total: depenses.rows.reduce((t, d) => t + Number(d.cout), 0),
+      },
 
       stock: stock.rows.map((p) => ({
         produit: p.produit_id,
