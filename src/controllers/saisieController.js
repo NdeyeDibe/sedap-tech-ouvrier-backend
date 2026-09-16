@@ -30,7 +30,11 @@ async function enregistrerMortalite(req, res) {
 
 async function enregistrerSante(req, res) {
   const { bandeId } = req.params;
-  const { etat, aVocal, photos } = req.body;
+  // vocalUrl : adresse Cloudinary du message vocal. Avant, seul le booléen
+  // aVocal arrivait ici : le fichier restait sur le téléphone de l'ouvrier,
+  // derrière une adresse temporaire du navigateur, et le propriétaire voyait
+  // qu'un vocal existait sans jamais pouvoir l'écouter.
+  const { etat, aVocal, vocalUrl, photos } = req.body;
   const urlsPhotos = Array.isArray(photos) ? photos : [];
 
   if (!["bien", "anormal", "urgent"].includes(etat)) {
@@ -42,12 +46,15 @@ async function enregistrerSante(req, res) {
 
   try {
     const resultat = await pool.query(
-      `INSERT INTO saisies_sante (bande_id, date_saisie, etat, a_vocal, photos)
-       VALUES ($1, CURRENT_DATE, $2, $3, $4)
+      `INSERT INTO saisies_sante (bande_id, date_saisie, etat, a_vocal, vocal_url, photos)
+       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5)
        ON CONFLICT (bande_id, date_saisie)
-       DO UPDATE SET etat = EXCLUDED.etat, a_vocal = EXCLUDED.a_vocal, photos = EXCLUDED.photos
+       DO UPDATE SET etat = EXCLUDED.etat,
+                     a_vocal = EXCLUDED.a_vocal,
+                     vocal_url = EXCLUDED.vocal_url,
+                     photos = EXCLUDED.photos
        RETURNING *`,
-      [bandeId, etat, aVocal || false, urlsPhotos]
+      [bandeId, etat, aVocal || false, vocalUrl || null, urlsPhotos]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
