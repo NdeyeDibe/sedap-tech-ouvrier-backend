@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { estValide, auFormatInternational } = require("../utils/telephone");
 
 // Écritures liées aux ventes.
 //
@@ -120,6 +121,9 @@ async function enregistrerVente(req, res) {
   if (!client || !String(client).trim()) {
     return res.status(400).json({ erreur: "Nom du client requis." });
   }
+  if (!estValide(telephone)) {
+    return res.status(400).json({ erreur: "Téléphone requis : 9 chiffres (ex. 77 123 45 67)." });
+  }
   if (!quantite || quantite <= 0) {
     return res.status(400).json({ erreur: "Quantité invalide." });
   }
@@ -143,7 +147,7 @@ async function enregistrerVente(req, res) {
         bandeId,
         type,
         String(client).trim(),
-        telephone || null,
+        auFormatInternational(telephone),
         quantite,
         type === "ramassage" ? null : prixUnitaire,
         req.utilisateur.id,
@@ -164,6 +168,9 @@ async function detaillerLot(req, res) {
 
   if (!client || !String(client).trim()) {
     return res.status(400).json({ erreur: "Nom de l'acheteur requis." });
+  }
+  if (!estValide(telephone)) {
+    return res.status(400).json({ erreur: "Téléphone requis : 9 chiffres (ex. 77 123 45 67)." });
   }
   if (!quantite || quantite <= 0) {
     return res.status(400).json({ erreur: "Quantité invalide." });
@@ -196,7 +203,7 @@ async function detaillerLot(req, res) {
       [
         venteId,
         String(client).trim(),
-        telephone || null,
+        auFormatInternational(telephone),
         quantite,
         prixUnitaire,
         req.utilisateur.id,
