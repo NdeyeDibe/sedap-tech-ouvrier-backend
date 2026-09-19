@@ -27,6 +27,43 @@ function getReferencePesage(jour) {
   return passees[passees.length - 1] || TABLE_PESAGE[0];
 }
 
+// Doses nécessaires pour vacciner TOUTE la bande, arrondi au flacon
+// supérieur par tranche de 500 doses — barème donné par Ndeye/Mengué :
+//   1-500 sujets    -> 500 doses
+//   501-1000 sujets -> 1000 doses (1 flacon de 1000, ou 2 de 500)
+//   1001-1500       -> 1500 doses
+//   1501-2000       -> 2000 doses
+// ...et ainsi de suite par tranche de 500 au-delà (le principe est le
+// même : on ne peut pas ouvrir "un demi-flacon", donc on arrondit
+// toujours au multiple de 500 supérieur). Le stock est suivi en NOMBRE
+// DE DOSES (colonne stock_produits.quantite, unite = 'doses'), pas en
+// nombre de flacons, donc cette valeur se déduit directement du stock.
+const PAS_DOSE = 500;
+function calculerDosesNecessaires(sujetsRestants) {
+  const sujets = Math.max(0, sujetsRestants || 0);
+  return Math.max(PAS_DOSE, Math.ceil(sujets / PAS_DOSE) * PAS_DOSE);
+}
+
+async function obtenirSujetsRestants(client, bandeId) {
+  const resultatBande = await client.query(
+    "SELECT poussins_recus, morts_a_larrivee FROM bandes WHERE id = $1",
+    [bandeId]
+  );
+  if (resultatBande.rows.length === 0) {
+    throw { statut: 404, message: "Bande introuvable." };
+  }
+  const bande = resultatBande.rows[0];
+
+  const [resultatMortalite, resultatVentes] = await Promise.all([
+    client.query("SELECT COALESCE(SUM(mortalite), 0) AS total FROM saisies_mortalite WHERE bande_id = $1", [bandeId]),
+    client.query("SELECT COALESCE(SUM(quantite), 0) AS total FROM ventes WHERE bande_id = $1", [bandeId]),
+  ]);
+
+  const mortaliteTotale = bande.morts_a_larrivee + parseInt(resultatMortalite.rows[0].total, 10);
+  const ventesTotales = parseInt(resultatVentes.rows[0].total, 10);
+  return bande.poussins_recus - mortaliteTotale - ventesTotales;
+}
+
 // POST /api/bandes/:bandeId/vaccinations
 // Body : { jourBande, vaccinNom, varianteId? }
 // varianteId optionnel : certaines entrées du programme (Vitamine
@@ -47,7 +84,11 @@ async function enregistrerVaccination(req, res) {
     await client.query("BEGIN");
 
     let stockProduitId = null;
+    let dosesNecessaires = null;
     if (varianteId) {
+      const sujetsRestants = await obtenirSujetsRestants(client, bandeId);
+      dosesNecessaires = calculerDosesNecessaires(sujetsRestants);
+
       const resultatStock = await client.query(
         "SELECT id, quantite FROM stock_produits WHERE poulailler_id = $1 AND produit_id = 'vaccin' AND variante_id = $2",
         [poulaillerId, varianteId]
@@ -56,12 +97,19 @@ async function enregistrerVaccination(req, res) {
         throw { statut: 400, message: "Vaccin inconnu dans le stock." };
       }
       const stock = resultatStock.rows[0];
-      if (stock.quantite <= 0) {
-        throw { statut: 409, message: "Ce vaccin n'est pas en stock." };
+      if (stock.quantite < dosesNecessaires) {
+        // Message explicite : l'ouvrier doit savoir combien il manque,
+        // pas juste "pas en stock" (retour Mengué : la quantité
+        // nécessaire dépend de la taille de la bande, pas d'un flacon
+        // fixe).
+        throw {
+          statut: 409,
+          message: `Stock insuffisant : il faut ${dosesNecessaires} doses pour ${sujetsRestants} sujets, il reste ${stock.quantite} dose(s).`,
+        };
       }
       stockProduitId = stock.id;
 
-      await client.query("UPDATE stock_produits SET quantite = quantite - 1 WHERE id = $1", [stockProduitId]);
+      await client.query("UPDATE stock_produits SET quantite = quantite - $1 WHERE id = $2", [dosesNecessaires, stockProduitId]);
     }
 
     const resultatVaccination = await client.query(
@@ -72,17 +120,18 @@ async function enregistrerVaccination(req, res) {
 
     // Enregistré automatiquement comme "produit utilisé" — l'ouvrier
     // n'a pas à le redéclarer dans l'écran "Produits utilisés"
-    // (décision Ndeye)
+    // (décision Ndeye). Quantité = le nombre de doses réellement
+    // utilisées pour toute la bande, pas un forfait de 1.
     if (stockProduitId) {
       await client.query(
         `INSERT INTO produits_utilises (bande_id, stock_produit_id, quantite, date_saisie)
-         VALUES ($1, $2, 1, CURRENT_DATE)`,
-        [bandeId, stockProduitId]
+         VALUES ($1, $2, $3, CURRENT_DATE)`,
+        [bandeId, stockProduitId, dosesNecessaires]
       );
     }
 
     await client.query("COMMIT");
-    res.status(201).json(resultatVaccination.rows[0]);
+    res.status(201).json({ ...resultatVaccination.rows[0], doses_utilisees: dosesNecessaires });
   } catch (erreur) {
     await client.query("ROLLBACK");
     if (erreur.statut) {

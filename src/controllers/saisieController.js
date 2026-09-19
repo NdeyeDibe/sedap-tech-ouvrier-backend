@@ -75,6 +75,27 @@ async function enregistrerAlimentation(req, res) {
   try {
     await client.query("BEGIN");
 
+    // Remet en stock ce qui avait été déduit par une éventuelle saisie
+    // déjà faite aujourd'hui, AVANT de la supprimer — sinon, modifier une
+    // alimentation déjà déclarée le même jour (carte "Aliment" cliquée
+    // depuis le Dashboard pour corriger) déduirait le stock une seconde
+    // fois pour la même quantité de départ (retour Mengué : la
+    // modification doit être possible tant que la journée n'est pas
+    // passée, sans fausser le stock).
+    const ancienneSaisie = await client.query(
+      "SELECT type_aliment, sacs, kg_supplementaires FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE",
+      [bandeId]
+    );
+    for (const ancienne of ancienneSaisie.rows) {
+      const totalKgAncien = parseFloat(ancienne.sacs) * 50 + parseFloat(ancienne.kg_supplementaires);
+      await client.query(
+        `UPDATE stock_produits SET quantite = quantite + $1
+         WHERE produit_id = 'aliment' AND variante_id = $2
+           AND poulailler_id = (SELECT poulailler_id FROM bandes WHERE id = $3)`,
+        [totalKgAncien, ancienne.type_aliment, bandeId]
+      );
+    }
+
     await client.query(
       "DELETE FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE",
       [bandeId]
@@ -110,11 +131,40 @@ async function enregistrerAlimentation(req, res) {
   }
 }
 
+// Marque une étape de la saisie du jour comme "vue aujourd'hui, rien à
+// déclarer" (ex: Alimentation quand il n'y a aucun stock disponible).
+// Sans ça, tant qu'aucune vraie ligne n'est enregistrée, le dashboard
+// considérait la journée comme "pas encore faite" et renvoyait l'ouvrier
+// en boucle sur cet écran à chaque "Continuer la saisie du jour" (retour
+// terrain Mengué). ON CONFLICT DO NOTHING : rejouable sans erreur si
+// l'ouvrier repasse plusieurs fois par cet écran le même jour.
+async function marquerSansDonnee(req, res) {
+  const { bandeId, etape } = req.params;
+  const etapesAutorisees = ["alimentation"];
+
+  if (!etapesAutorisees.includes(etape)) {
+    return res.status(400).json({ erreur: "Étape invalide." });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO saisies_sans_donnee (bande_id, date_saisie, etape)
+       VALUES ($1, CURRENT_DATE, $2)
+       ON CONFLICT (bande_id, date_saisie, etape) DO NOTHING`,
+      [bandeId, etape]
+    );
+    res.status(201).json({ ok: true });
+  } catch (erreur) {
+    console.error("Erreur marquage sans-donnée :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 async function getSaisieDuJour(req, res) {
   const { bandeId } = req.params;
 
   try {
-    const [mortalite, sante, alimentation, vaccination, pesage, produitsUtilises] = await Promise.all([
+    const [mortalite, sante, alimentation, vaccination, pesage, produitsUtilises, sansDonnee] = await Promise.all([
       pool.query("SELECT * FROM saisies_mortalite WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query("SELECT * FROM saisies_sante WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
       pool.query("SELECT * FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
@@ -133,16 +183,21 @@ async function getSaisieDuJour(req, res) {
          WHERE pu.bande_id = $1 AND pu.date_saisie = CURRENT_DATE`,
         [bandeId]
       ),
+      pool.query("SELECT etape FROM saisies_sans_donnee WHERE bande_id = $1 AND date_saisie = CURRENT_DATE", [bandeId]),
     ]);
+
+    const etapesSansDonnee = sansDonnee.rows.map((r) => r.etape);
+    const alimentationFaite = alimentation.rows.length > 0 || etapesSansDonnee.includes("alimentation");
 
     res.json({
       mortalite: mortalite.rows[0] || null,
       sante: sante.rows[0] || null,
       alimentation: alimentation.rows,
+      alimentationSansStock: etapesSansDonnee.includes("alimentation"),
       vaccination: vaccination.rows[0] || null,
       pesage: pesage.rows[0] || null,
       produitsUtilises: produitsUtilises.rows,
-      complete: mortalite.rows.length > 0 && sante.rows.length > 0 && alimentation.rows.length > 0,
+      complete: mortalite.rows.length > 0 && sante.rows.length > 0 && alimentationFaite,
     });
   } catch (erreur) {
     console.error("Erreur récupération saisie du jour :", erreur);
@@ -150,4 +205,10 @@ async function getSaisieDuJour(req, res) {
   }
 }
 
-module.exports = { enregistrerMortalite, enregistrerSante, enregistrerAlimentation, getSaisieDuJour };
+module.exports = {
+  enregistrerMortalite,
+  enregistrerSante,
+  enregistrerAlimentation,
+  marquerSansDonnee,
+  getSaisieDuJour,
+};
