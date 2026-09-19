@@ -79,7 +79,18 @@ function alerteVaccination({ datePrevue, confirme, aujourdhui = new Date() }) {
   return new Date(datePrevue) <= aujourdhui ? NIVEAU.URGENT : NIVEAU.OK;
 }
 
+// Libellés des trois saisies quotidiennes, dans l'ordre du parcours ouvrier.
+const SAISIES_QUOTIDIENNES = {
+  mortalite: "mortalité",
+  sante: "santé",
+  alimentation: "aliments",
+};
+
 // Alertes actives d'une bande, de la plus grave à la plus calme.
+//
+// Chaque alerte porte une « cle » stable : c'est elle qui permet de ne
+// notifier qu'une fois la même alerte, au lieu de la renvoyer à chaque
+// passage de la surveillance automatique.
 function alertesBande(bande) {
   const alertes = [];
 
@@ -87,6 +98,7 @@ function alertesBande(bande) {
   if (mortalite !== NIVEAU.OK) {
     alertes.push({
       type: "mortalite",
+      cle: "jour",
       niveau: mortalite,
       titre: "Mortalité",
       message: "Mortalité au dessus du seuil",
@@ -97,6 +109,7 @@ function alertesBande(bande) {
   if (aliment !== NIVEAU.OK) {
     alertes.push({
       type: "aliment",
+      cle: "stock",
       niveau: aliment,
       titre: "Stock aliment",
       message: `Aliment : moins de ${joursAutonomie(bande) + 1} jours d'autonomie`,
@@ -108,11 +121,36 @@ function alertesBande(bande) {
     if (vaccination !== NIVEAU.OK) {
       alertes.push({
         type: "vaccination",
+        cle: bande.prochainVaccin.nom,
         niveau: vaccination,
         titre: "Vaccination",
         message: `${bande.prochainVaccin.nom} non confirmé à J${bande.prochainVaccin.jour}`,
       });
     }
+  }
+
+  // Pesage oublié : à surveiller, pas urgent — il ne met pas les sujets en
+  // danger, mais sans lui on ne sait plus si la croissance suit.
+  if (bande.pesageManque) {
+    alertes.push({
+      type: "pesage",
+      cle: `J${bande.pesageManque.jour}`,
+      niveau: NIVEAU.SURVEILLER,
+      titre: "Pesage",
+      message: `Pesage de J${bande.pesageManque.jour} non fait`,
+    });
+  }
+
+  // Saisie du jour incomplète passé l'heure limite (18h).
+  if (bande.saisiesManquantes?.length) {
+    const manquantes = bande.saisiesManquantes.map((s) => SAISIES_QUOTIDIENNES[s]);
+    alertes.push({
+      type: "saisie",
+      cle: "jour",
+      niveau: NIVEAU.SURVEILLER,
+      titre: "Saisie du jour",
+      message: `Saisie non faite : ${manquantes.join(", ")}`,
+    });
   }
 
   return alertes.sort(

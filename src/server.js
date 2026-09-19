@@ -11,6 +11,8 @@ const stockRoutes = require("./routes/stockRoutes");
 const suiviRoutes = require("./routes/suiviRoutes");
 const venteRoutes = require("./routes/venteRoutes");
 const proprietaireAuthRoutes = require("./routes/proprietaireAuthRoutes");
+const proprietaireRoutes = require("./routes/proprietaireRoutes");
+const { demarrerSurveillance } = require("./jobs/surveillance");
 
 const app = express();
 
@@ -37,8 +39,7 @@ app.use("/api/stock", stockRoutes);
 // ne s'authentifient pas de la même façon — le propriétaire n'a pas de
 // pré-inscription, et s'identifie par téléphone OU e-mail.
 app.use("/api/proprietaire/auth", proprietaireAuthRoutes);
-app.use("/api/proprietaire/auth", proprietaireAuthRoutes);
-app.use("/api/proprietaire", require("./routes/proprietaireRoutes"));
+app.use("/api/proprietaire", proprietaireRoutes);
 
 app.use((err, req, res, next) => {
   console.error("Erreur non gérée :", err);
@@ -70,3 +71,7 @@ if (fs.existsSync(CHEMIN_CERT) && fs.existsSync(CHEMIN_CLE)) {
     console.log(`✅ Serveur SEDAP'Tech backend démarré sur http://localhost:${PORT}`);
   });
 }
+
+// Tâches automatiques : notifications des nouvelles alertes (toutes les
+// 15 min) et suppression des vieux vocaux (une fois par jour).
+demarrerSurveillance();

@@ -29,6 +29,12 @@ const {
   supprimerFrais,
   modifierProfil,
 } = require("../controllers/proprietaireGestionController");
+const {
+  clePublique,
+  abonner,
+  desabonner,
+  tester,
+} = require("../controllers/proprietairePushController");
 const { verifierToken, exigerRole } = require("../middleware/auth");
 
 // Toutes les routes de ce fichier sont réservées au propriétaire connecté,
@@ -66,5 +72,11 @@ router.post("/frais", ajouterFrais);
 router.delete("/frais/:fraisId", supprimerFrais);
 
 router.patch("/profil", modifierProfil);
+
+// Notifications push
+router.get("/push/cle", clePublique);
+router.post("/push/abonnement", abonner);
+router.post("/push/desabonnement", desabonner);
+router.post("/push/test", tester);
 
 module.exports = router;
