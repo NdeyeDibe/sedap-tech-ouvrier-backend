@@ -141,6 +141,19 @@ function alertesBande(bande) {
     });
   }
 
+  // Réception payée par le propriétaire : l'ouvrier a déclaré la quantité,
+  // le prix reste à sa charge. Sans lui, la dépense manque au bilan.
+  if (bande.receptionsSansPrix > 0) {
+    const n = bande.receptionsSansPrix;
+    alertes.push({
+      type: "reception",
+      cle: "prix",
+      niveau: NIVEAU.SURVEILLER,
+      titre: "Réception à chiffrer",
+      message: `${n} réception${n > 1 ? "s" : ""} de stock sans prix`,
+    });
+  }
+
   // Saisie du jour incomplète passé l'heure limite (18h).
   if (bande.saisiesManquantes?.length) {
     const manquantes = bande.saisiesManquantes.map((s) => SAISIES_QUOTIDIENNES[s]);

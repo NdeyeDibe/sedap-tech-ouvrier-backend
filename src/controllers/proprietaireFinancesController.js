@@ -147,6 +147,9 @@ async function detailBilan(req, res) {
       totalDepenses: Number(bilan.total_depenses),
       totalRecettes: Number(bilan.total_recettes),
       sujetsSansPrix: Number(bilan.sujets_sans_prix),
+      // Réceptions sans prix : le total des dépenses est incomplet tant
+      // qu'elles ne sont pas chiffrées.
+      receptionsSansPrix: Number(bilan.receptions_sans_prix),
 
       mortalite: {
         sujets: Number(bilan.morts),

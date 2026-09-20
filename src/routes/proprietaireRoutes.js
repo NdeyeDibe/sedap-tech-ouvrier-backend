@@ -30,6 +30,10 @@ const {
   modifierProfil,
 } = require("../controllers/proprietaireGestionController");
 const {
+  registreReceptions,
+  renseignerPrix,
+} = require("../controllers/proprietaireReceptionsController");
+const {
   clePublique,
   abonner,
   desabonner,
@@ -62,6 +66,11 @@ router.post("/bandes/:bandeId/ventes", enregistrerVente);
 router.post("/ventes/:venteId/details", detaillerLot);
 router.delete("/ventes/:venteId", supprimerVente);
 router.delete("/ventes/details/:detailId", supprimerDetail);
+
+// Réceptions de stock — le propriétaire complète les prix des achats
+// qu'il a réglés lui-même chez le fournisseur
+router.get("/poulaillers/:poulaillerId/receptions", registreReceptions);
+router.patch("/receptions/:origine/:receptionId/prix", renseignerPrix);
 
 // Personnel et frais — les seules autres écritures autorisées
 router.post("/personnel", ajouterOuvrier);

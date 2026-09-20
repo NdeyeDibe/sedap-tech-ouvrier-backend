@@ -73,6 +73,13 @@ const REQUETE_FERME = `
              WHERE sa.bande_id = b.id AND sa.date_saisie = current_date) AS alimentation_faite,
     (now() AT TIME ZONE 'Africa/Dakar')::time >= '${HEURE_LIMITE_SAISIE}' AS heure_limite_passee,
 
+    -- Réceptions rattachées à cette bande dont le prix n'a pas encore été
+    -- renseigné par le propriétaire (vue receptions_ferme, migration 015).
+    coalesce((
+      SELECT count(*) FROM receptions_ferme rf
+       WHERE rf.bande_id = b.id AND rf.prix_unitaire IS NULL
+    ), 0) AS receptions_sans_prix,
+
     coalesce((
       SELECT sum(sp.quantite) FROM stock_produits sp
        WHERE sp.poulailler_id = pl.id AND sp.produit_id = 'aliment'
@@ -146,6 +153,7 @@ function construireBande(ligne, retards = []) {
         }
       : null,
     pesageManque: pesage ? { jour: pesage.jour_debut } : null,
+    receptionsSansPrix: Number(ligne.receptions_sans_prix),
     saisiesManquantes,
   };
 }

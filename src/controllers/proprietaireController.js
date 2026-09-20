@@ -218,6 +218,8 @@ async function detailPoulailler(req, res) {
         restant: Number(ligne.restant),
         tauxMortalite: ligne.taux_mortalite ? Number(ligne.taux_mortalite) : 0,
         sujetsSansPrix: Number(ligne.sujets_sans_prix),
+        // Réceptions payées par le propriétaire dont le prix manque encore.
+        receptionsSansPrix: Number(ligne.receptions_sans_prix),
       },
 
       saisies: saisies.rows.map((s) => ({
