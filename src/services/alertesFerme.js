@@ -69,8 +69,14 @@ const REQUETE_FERME = `
              WHERE sm.bande_id = b.id AND sm.date_saisie = current_date) AS mortalite_faite,
     EXISTS (SELECT 1 FROM saisies_sante ss
              WHERE ss.bande_id = b.id AND ss.date_saisie = current_date) AS sante_faite,
-    EXISTS (SELECT 1 FROM saisies_alimentation sa
-             WHERE sa.bande_id = b.id AND sa.date_saisie = current_date) AS alimentation_faite,
+    -- « Vu, rien à déclarer » (pas de stock d'aliment) compte comme une
+    -- saisie faite : l'ouvrier est passé par l'étape, il n'avait rien à
+    -- distribuer. Même règle que l'écran de l'ouvrier (saisieController).
+    (EXISTS (SELECT 1 FROM saisies_alimentation sa
+              WHERE sa.bande_id = b.id AND sa.date_saisie = current_date)
+     OR EXISTS (SELECT 1 FROM saisies_sans_donnee sd
+                 WHERE sd.bande_id = b.id AND sd.date_saisie = current_date
+                   AND sd.etape = 'alimentation')) AS alimentation_faite,
     (now() AT TIME ZONE 'Africa/Dakar')::time >= '${HEURE_LIMITE_SAISIE}' AS heure_limite_passee,
 
     -- Réceptions rattachées à cette bande dont le prix n'a pas encore été

@@ -48,6 +48,11 @@ function alerteMortalite({
     avantVeille > troisiemeJour;
   if (hausseContinue) return NIVEAU.URGENT;
 
+  // État « Anormal » déclaré par l'ouvrier : à surveiller, même quand les
+  // chiffres restent sous les seuils — c'est lui qui voit les sujets.
+  // (Cahier ouvrier V.2, repris par les cahiers propriétaire et admin.)
+  if (etatOuvrier === "anormal") return NIVEAU.SURVEILLER;
+
   if (veille != null && veille > 0 && mortsDuJour >= veille * 2) {
     return NIVEAU.SURVEILLER;
   }
@@ -79,6 +84,16 @@ function alerteVaccination({ datePrevue, confirme, aujourdhui = new Date() }) {
   return new Date(datePrevue) <= aujourdhui ? NIVEAU.URGENT : NIVEAU.OK;
 }
 
+// Le message dit ce qui a déclenché l'alerte. Sans ça, un état « Anormal »
+// signalé avec zéro mort s'afficherait « Mortalité au dessus du seuil ».
+function messageMortalite({ etatOuvrier }, niveau) {
+  if (etatOuvrier === "urgent") return "État urgent signalé par l'ouvrier";
+  if (etatOuvrier === "anormal" && niveau === NIVEAU.SURVEILLER) {
+    return "État anormal signalé par l'ouvrier";
+  }
+  return "Mortalité au dessus du seuil";
+}
+
 // Libellés des trois saisies quotidiennes, dans l'ordre du parcours ouvrier.
 const SAISIES_QUOTIDIENNES = {
   mortalite: "mortalité",
@@ -101,7 +116,7 @@ function alertesBande(bande) {
       cle: "jour",
       niveau: mortalite,
       titre: "Mortalité",
-      message: "Mortalité au dessus du seuil",
+      message: messageMortalite(bande, mortalite),
     });
   }
 
