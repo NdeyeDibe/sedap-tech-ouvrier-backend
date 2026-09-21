@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { parProprietaire, differences } = require("../services/journal");
 
 // Les seules écritures autorisées au propriétaire hors ventes : son personnel,
 // ses frais, son profil. Tout le reste de la production est en lecture seule.
@@ -56,6 +57,20 @@ async function ajouterOuvrier(req, res) {
       ]
     );
 
+    parProprietaire(req, {
+      action: "ouvrier_ajoute",
+      cibleType: "personnel",
+      cibleId: rows[0].id,
+      fermeId: ferme.id,
+      poulaillerId: poulaillerId || undefined,
+      details: {
+        prenom: String(prenom).trim(),
+        telephone: telephone || null,
+        salaire: Number(salaire),
+        priseFonction: priseFonction || new Date().toISOString().slice(0, 10),
+      },
+    });
+
     res.status(201).json({ id: rows[0].id });
   } catch (erreur) {
     console.error("Erreur ajout d'un ouvrier :", erreur);
@@ -73,15 +88,17 @@ async function modifierOuvrier(req, res) {
     const ferme = await fermeDu(req.utilisateur.id);
     if (!ferme) return res.status(404).json({ erreur: "Aucune ferme." });
 
+    // Toute la ligne, pour que le journal garde les valeurs d'avant.
     const { rows } = await pool.query(
-      "SELECT role FROM personnel WHERE id = $1 AND ferme_id = $2",
+      "SELECT * FROM personnel WHERE id = $1 AND ferme_id = $2",
       [personnelId, ferme.id]
     );
     if (rows.length === 0) {
       return res.status(404).json({ erreur: "Ouvrier introuvable." });
     }
+    const avant = rows[0];
 
-    if (rows[0].role === "responsable") {
+    if (avant.role === "responsable") {
       if (salaire == null || salaire < 0) {
         return res.status(400).json({ erreur: "Salaire requis." });
       }
@@ -89,6 +106,21 @@ async function modifierOuvrier(req, res) {
         salaire,
         personnelId,
       ]);
+
+      if (String(avant.salaire) !== String(salaire)) {
+        parProprietaire(req, {
+          action: "salaire_modifie",
+          cibleType: "personnel",
+          cibleId: avant.id,
+          fermeId: ferme.id,
+          poulaillerId: avant.poulailler_id ?? undefined,
+          details: {
+            prenom: avant.prenom,
+            role: "responsable",
+            salaire: { avant: avant.salaire, apres: Number(salaire) },
+          },
+        });
+      }
       return res.json({ id: Number(personnelId), salaire });
     }
 
@@ -108,6 +140,29 @@ async function modifierOuvrier(req, res) {
       ]
     );
 
+    const changements = differences(
+      avant,
+      {
+        prenom: prenom ? String(prenom).trim() : undefined,
+        telephone: telephone ?? undefined,
+        poulailler_id: poulaillerId ?? undefined,
+        salaire: salaire ?? undefined,
+      },
+      ["prenom", "telephone", "poulailler_id", "salaire"]
+    );
+    if (Object.keys(changements).length > 0) {
+      parProprietaire(req, {
+        action: changements.salaire && Object.keys(changements).length === 1
+          ? "salaire_modifie"
+          : "ouvrier_modifie",
+        cibleType: "personnel",
+        cibleId: avant.id,
+        fermeId: ferme.id,
+        poulaillerId: avant.poulailler_id ?? undefined,
+        details: { prenom: avant.prenom, role: "simple", ...changements },
+      });
+    }
+
     res.json({ id: Number(personnelId) });
   } catch (erreur) {
     console.error("Erreur modification d'un ouvrier :", erreur);
@@ -126,7 +181,7 @@ async function retirerOuvrier(req, res) {
     if (!ferme) return res.status(404).json({ erreur: "Aucune ferme." });
 
     const { rows } = await pool.query(
-      "SELECT role FROM personnel WHERE id = $1 AND ferme_id = $2 AND fin_fonction IS NULL",
+      "SELECT role, prenom, poulailler_id, salaire FROM personnel WHERE id = $1 AND ferme_id = $2 AND fin_fonction IS NULL",
       [personnelId, ferme.id]
     );
     if (rows.length === 0) {
@@ -142,6 +197,15 @@ async function retirerOuvrier(req, res) {
       "UPDATE personnel SET fin_fonction = current_date WHERE id = $1",
       [personnelId]
     );
+
+    parProprietaire(req, {
+      action: "ouvrier_retire",
+      cibleType: "personnel",
+      cibleId: Number(personnelId),
+      fermeId: ferme.id,
+      poulaillerId: rows[0].poulailler_id ?? undefined,
+      details: { prenom: rows[0].prenom, salaire: rows[0].salaire },
+    });
 
     res.status(204).end();
   } catch (erreur) {
@@ -184,6 +248,19 @@ async function ajouterFrais(req, res) {
       ]
     );
 
+    parProprietaire(req, {
+      action: "frais_ajoute",
+      cibleType: "frais",
+      cibleId: rows[0].id,
+      fermeId: ferme.id,
+      poulaillerId: poulaillerId || undefined,
+      details: {
+        description: String(description).trim(),
+        montant: Number(montant),
+        date,
+      },
+    });
+
     // Le frais se rattache au mois de SA date. Si ce n'est pas le mois en
     // cours, l'écran doit le dire — sinon la saisie a l'air d'avoir échoué.
     const saisie = new Date(rows[0].date_depense);
@@ -206,16 +283,26 @@ async function supprimerFrais(req, res) {
   const { fraisId } = req.params;
 
   try {
-    const { rowCount } = await pool.query(
+    const { rows, rowCount } = await pool.query(
       `DELETE FROM frais f
         USING fermes fe
-        WHERE f.id = $1 AND fe.id = f.ferme_id AND fe.proprietaire_id = $2`,
+        WHERE f.id = $1 AND fe.id = f.ferme_id AND fe.proprietaire_id = $2
+        RETURNING f.*`,
       [fraisId, req.utilisateur.id]
     );
 
     if (rowCount === 0) {
       return res.status(404).json({ erreur: "Frais introuvable." });
     }
+
+    parProprietaire(req, {
+      action: "frais_supprime",
+      cibleType: "frais",
+      cibleId: rows[0].id,
+      fermeId: rows[0].ferme_id,
+      poulaillerId: rows[0].poulailler_id ?? undefined,
+      details: { supprime: rows[0] },
+    });
 
     res.status(204).end();
   } catch (erreur) {
@@ -235,7 +322,7 @@ async function modifierProfil(req, res) {
 
   try {
     const { rows } = await pool.query(
-      "SELECT telephone FROM proprietaires WHERE id = $1",
+      "SELECT telephone, nom, prenom, email FROM proprietaires WHERE id = $1",
       [req.utilisateur.id]
     );
     if (rows.length === 0) {
@@ -254,6 +341,23 @@ async function modifierProfil(req, res) {
     const changeTelephone =
       telephone && telephone.replace(/\D/g, "") !==
         rows[0].telephone.replace(/\D/g, "");
+
+    const changements = differences(
+      rows[0],
+      { nom: nom ?? undefined, prenom: prenom ?? undefined, email: email ?? undefined },
+      ["nom", "prenom", "email"]
+    );
+    if (changeTelephone) {
+      changements.telephoneDemande = { avant: rows[0].telephone, apres: telephone };
+    }
+    if (Object.keys(changements).length > 0) {
+      parProprietaire(req, {
+        action: "profil_modifie",
+        cibleType: "compte",
+        cibleId: req.utilisateur.id,
+        details: changements,
+      });
+    }
 
     res.json({
       telephoneEnAttente: changeTelephone ? telephone : null,

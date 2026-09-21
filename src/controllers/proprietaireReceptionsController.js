@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { parProprietaire } = require("../services/journal");
 
 // Réceptions de stock vues par le propriétaire.
 //
@@ -129,7 +130,8 @@ async function renseignerPrix(req, res) {
             AND f.id = pl.ferme_id
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
-          RETURNING r.id`
+          RETURNING r.id, sp.poulailler_id, sp.nom AS produit,
+                    r.quantite_recue AS quantite, r.date_reception`
       : `UPDATE stock_autres_produits r
             SET prix_unitaire = $1
           FROM poulaillers pl, fermes f
@@ -138,10 +140,11 @@ async function renseignerPrix(req, res) {
             AND f.id = pl.ferme_id
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
-          RETURNING r.id`;
+          RETURNING r.id, r.poulailler_id, r.nom AS produit,
+                    r.quantite, r.date_reception`;
 
   try {
-    const { rowCount } = await pool.query(condition, [
+    const { rows, rowCount } = await pool.query(condition, [
       Number(prixUnitaire),
       receptionId,
       req.utilisateur.id,
@@ -152,6 +155,20 @@ async function renseignerPrix(req, res) {
         erreur: "Réception introuvable, ou son prix est déjà renseigné.",
       });
     }
+
+    parProprietaire(req, {
+      action: "prix_reception_renseigne",
+      cibleType: "reception",
+      cibleId: Number(receptionId),
+      poulaillerId: rows[0].poulailler_id,
+      details: {
+        origine,
+        produit: rows[0].produit,
+        quantite: Number(rows[0].quantite),
+        prixUnitaire: Number(prixUnitaire),
+        dateReception: rows[0].date_reception,
+      },
+    });
 
     res.json({ id: Number(receptionId), origine, prixUnitaire: Number(prixUnitaire) });
   } catch (erreur) {

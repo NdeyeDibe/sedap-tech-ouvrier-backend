@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../db/pool");
+const { journaliser } = require("../services/journal");
 
 const TOUR_DE_HACHAGE = 10;
 const TENTATIVES_MAX = 3;
@@ -138,6 +139,15 @@ async function creerPin(req, res) {
       [pinHash, proprietaire.id]
     );
 
+    journaliser({
+      acteurType: "proprietaire",
+      acteurId: proprietaire.id,
+      proprietaireId: proprietaire.id,
+      action: "compte_active",
+      cibleType: "compte",
+      cibleId: proprietaire.id,
+    });
+
     res.status(201).json({
       token: genererToken(proprietaire.id),
       proprietaireId: proprietaire.id,
@@ -188,6 +198,14 @@ async function connexion(req, res) {
       );
 
       if (verrouiller) {
+        journaliser({
+          acteurType: "systeme",
+          proprietaireId: proprietaire.id,
+          action: "compte_verrouille",
+          cibleType: "compte",
+          cibleId: proprietaire.id,
+          details: { motif: `${TENTATIVES_MAX} codes PIN faux` },
+        });
         return res.status(403).json({
           erreur: "Compte verrouillé après 3 tentatives. Contactez le support SEDAP.",
           compteVerrouille: true,

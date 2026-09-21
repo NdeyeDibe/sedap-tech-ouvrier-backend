@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { estValide, auFormatInternational } = require("../utils/telephone");
+const { parProprietaire } = require("../services/journal");
 
 // Écritures liées aux ventes.
 //
@@ -154,6 +155,20 @@ async function enregistrerVente(req, res) {
       ]
     );
 
+    parProprietaire(req, {
+      action: "vente_enregistree",
+      cibleType: "vente",
+      cibleId: rows[0].id,
+      bandeId: Number(bandeId),
+      details: {
+        type,
+        client: String(client).trim(),
+        telephone: auFormatInternational(telephone),
+        quantite: Number(quantite),
+        prixUnitaire: type === "ramassage" ? null : Number(prixUnitaire),
+      },
+    });
+
     res.status(201).json({ id: rows[0].id, date: rows[0].date_vente });
   } catch (erreur) {
     repondreErreur(res, erreur, "enregistrement d'une vente");
@@ -182,7 +197,7 @@ async function detaillerLot(req, res) {
   try {
     // Le lot doit appartenir à une bande de sa ferme.
     const { rows: lot } = await pool.query(
-      `SELECT v.id
+      `SELECT v.id, v.bande_id, v.nom_client
          FROM ventes v
          JOIN bandes b ON b.id = v.bande_id
          JOIN poulaillers pl ON pl.id = b.poulailler_id
@@ -210,6 +225,21 @@ async function detaillerLot(req, res) {
       ]
     );
 
+    parProprietaire(req, {
+      action: "lot_detaille",
+      cibleType: "vente",
+      cibleId: Number(venteId),
+      bandeId: lot[0].bande_id,
+      details: {
+        detailId: rows[0].id,
+        ramasseur: lot[0].nom_client,
+        client: String(client).trim(),
+        telephone: auFormatInternational(telephone),
+        quantite: Number(quantite),
+        prixUnitaire: Number(prixUnitaire),
+      },
+    });
+
     res.status(201).json({ id: rows[0].id, date: rows[0].cree_le });
   } catch (erreur) {
     repondreErreur(res, erreur, "détail d'un ramassage");
@@ -224,13 +254,16 @@ async function supprimerVente(req, res) {
   const { venteId } = req.params;
 
   try {
-    const { rowCount } = await pool.query(
+    // RETURNING : la ligne supprimée part au journal d'activité, seule
+    // trace qui en restera.
+    const { rows, rowCount } = await pool.query(
       `DELETE FROM ventes v
         USING bandes b, poulaillers pl, fermes f
         WHERE v.id = $1
           AND b.id = v.bande_id AND pl.id = b.poulailler_id AND f.id = pl.ferme_id
           AND f.proprietaire_id = $2
-          AND v.auteur_type = 'proprietaire'`,
+          AND v.auteur_type = 'proprietaire'
+        RETURNING v.*`,
       [venteId, req.utilisateur.id]
     );
 
@@ -239,6 +272,14 @@ async function supprimerVente(req, res) {
         erreur: "Vente introuvable, ou saisie par l'ouvrier.",
       });
     }
+
+    parProprietaire(req, {
+      action: "vente_supprimee",
+      cibleType: "vente",
+      cibleId: rows[0].id,
+      bandeId: rows[0].bande_id,
+      details: { supprime: rows[0] },
+    });
 
     res.status(204).end();
   } catch (erreur) {
@@ -250,20 +291,30 @@ async function supprimerDetail(req, res) {
   const { detailId } = req.params;
 
   try {
-    const { rowCount } = await pool.query(
+    const { rows, rowCount } = await pool.query(
       `DELETE FROM ventes_details d
         USING ventes v, bandes b, poulaillers pl, fermes f
         WHERE d.id = $1
           AND v.id = d.vente_id AND b.id = v.bande_id
           AND pl.id = b.poulailler_id AND f.id = pl.ferme_id
           AND f.proprietaire_id = $2
-          AND d.saisi_par = $2`,
+          AND d.saisi_par = $2
+        RETURNING d.*, v.bande_id`,
       [detailId, req.utilisateur.id]
     );
 
     if (rowCount === 0) {
       return res.status(404).json({ erreur: "Ligne introuvable." });
     }
+
+    const { bande_id: bandeIdDetail, ...supprime } = rows[0];
+    parProprietaire(req, {
+      action: "detail_lot_supprime",
+      cibleType: "vente",
+      cibleId: supprime.vente_id,
+      bandeId: bandeIdDetail,
+      details: { supprime },
+    });
 
     res.status(204).end();
   } catch (erreur) {

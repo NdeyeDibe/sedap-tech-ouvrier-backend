@@ -1,6 +1,7 @@
 const pool = require("../db/pool");
 const { normaliser, estValide, NB_CHIFFRES } = require("../utils/telephone");
 const { creerStockInitial } = require("../utils/stockInitial");
+const { parAdmin } = require("../services/journal");
 
 // Ouvriers responsables — cahier admin v1.1, section VII.
 //
@@ -15,14 +16,6 @@ const URL_OUVRIER = process.env.OUVRIER_URL || null;
 // Format déjà en base pour les ouvriers : 221 suivi des 9 chiffres, sans
 // « + ». On le garde, pour que tous les comptes aient la même forme.
 const auFormatOuvrier = (valeur) => `221${normaliser(valeur)}`;
-
-function journaliser(client, adminId, action, cibleType, cibleId, details) {
-  return client.query(
-    `INSERT INTO admin_journal (admin_id, action, cible_type, cible_id, details)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [adminId, action, cibleType, cibleId, JSON.stringify(details)]
-  );
-}
 
 // POST /api/admin/poulaillers/:id/ouvrier
 async function creerOuvrierResponsable(req, res) {
@@ -120,12 +113,18 @@ async function creerOuvrierResponsable(req, res) {
     // Un poulailler neuf n'a pas encore son catalogue de stock.
     await creerStockInitial(client, poulaillerId);
 
-    await journaliser(client, req.utilisateur.id, "ouvrier_cree", "ouvrier", ouvrier.id, {
-      poulaillerId,
-      telephone: ouvrier.telephone,
-    });
-
     await client.query("COMMIT");
+
+    // Après le COMMIT, hors transaction : le journal ne doit jamais faire
+    // échouer la création (cahier admin X bis).
+    parAdmin(req, {
+      action: "ouvrier_responsable_cree",
+      cibleType: "ouvrier",
+      cibleId: ouvrier.id,
+      poulaillerId,
+      fermeId: poulailler.ferme_id,
+      details: { prenom, nom, telephone: ouvrier.telephone, poulailler: poulailler.nom },
+    });
 
     // TODO(ENVOI) : pas encore de service SMS. L'écran admin affiche ce
     // message avec un bouton « Copier », pour que SEDAP l'envoie elle-même.
