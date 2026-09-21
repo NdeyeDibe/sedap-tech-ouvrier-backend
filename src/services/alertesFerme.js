@@ -1,10 +1,12 @@
 const pool = require("../db/pool");
 const { alertesBande, statutBande, kgDistribues } = require("../utils/alertes");
 
-// État courant des poulaillers d'un propriétaire, alertes comprises.
+// État courant des poulaillers d'un propriétaire — ou de toutes les fermes
+// pour l'admin SEDAP —, alertes comprises.
 //
-// Trois lecteurs en ont besoin : le tableau de bord, la liste des alertes
-// et la surveillance automatique qui envoie les notifications. Tout passe
+// Quatre lecteurs en ont besoin : le tableau de bord propriétaire, la liste
+// des alertes, la surveillance automatique qui envoie les notifications, et
+// le tableau de bord admin. Tout passe
 // par ici, pour qu'une alerte visible dans l'appli soit exactement celle
 // qui a été notifiée — et inversement.
 
@@ -19,6 +21,8 @@ const JOURS_ALERTE_PESAGE = 2;
 
 const REQUETE_FERME = `
   SELECT
+    f.id                 AS ferme_id,
+    f.nom                AS ferme_nom,
     pl.id                AS poulailler_id,
     pl.nom               AS poulailler_nom,
     b.id                 AS bande_id,
@@ -112,9 +116,15 @@ const REQUETE_FERME = `
     ON pe.poulailler_id = pl.id
    AND pe.role = 'responsable'
    AND pe.fin_fonction IS NULL
-  WHERE f.proprietaire_id = $1
+  -- $3 n'est vrai que pour l'admin (chargerToutesLesFermes). Un paramètre
+  -- explicite plutôt qu'un propriétaire NULL : un identifiant manquant par
+  -- erreur côté propriétaire ne doit jamais ouvrir toutes les fermes.
+  WHERE ($3::boolean OR f.proprietaire_id = $1)
     AND ($2::int IS NULL OR pl.id = $2)
-  ORDER BY pl.id
+    -- Un poulailler archivé disparaît des listes ; son historique reste
+    -- dans les rapports (cahier admin VIII).
+    AND pl.archive_le IS NULL
+  ORDER BY f.id, pl.id
 `;
 
 // Actes du programme sanitaire en retard : le premier vaccin manqué, et le
@@ -167,10 +177,16 @@ function construireBande(ligne, retards = []) {
 // Renvoie les lignes de la requête, chacune complétée de ses alertes et de
 // son niveau (ok, surveiller, urgent). Un poulailler sans bande active n'a rien à surveiller.
 async function chargerFerme(proprietaireId, poulaillerId = null) {
-  const { rows } = await pool.query(REQUETE_FERME, [
-    proprietaireId,
-    poulaillerId,
-  ]);
+  return charger([proprietaireId, poulaillerId, false]);
+}
+
+// Toutes les fermes — réservé au tableau de bord et aux alertes de l'admin.
+async function chargerToutesLesFermes() {
+  return charger([null, null, true]);
+}
+
+async function charger(parametres) {
+  const { rows } = await pool.query(REQUETE_FERME, parametres);
 
   const bandeIds = rows.filter((l) => l.bande_id).map((l) => l.bande_id);
 
@@ -185,13 +201,17 @@ async function chargerFerme(proprietaireId, poulaillerId = null) {
   return rows.map((ligne) => {
     // « niveau » et non « statut » : ligne.statut est déjà celui de la
     // bande (en_cours, en_vente).
-    if (!ligne.bande_id) return { ...ligne, alertes: [], niveau: "ok" };
+    if (!ligne.bande_id) {
+      return { ...ligne, alertes: [], niveau: "ok", saisiesManquantes: [] };
+    }
 
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
     return {
       ...ligne,
       alertes: alertesBande(bande),
       niveau: statutBande(bande),
+      // Lu par l'admin pour son bloc « Saisies manquantes aujourd'hui ».
+      saisiesManquantes: bande.saisiesManquantes,
     };
   });
 }
@@ -215,4 +235,10 @@ async function alertesDeLaFerme(proprietaireId) {
   );
 }
 
-module.exports = { chargerFerme, alertesDeLaFerme, ouvrierDe };
+module.exports = {
+  HEURE_LIMITE_SAISIE,
+  chargerFerme,
+  chargerToutesLesFermes,
+  alertesDeLaFerme,
+  ouvrierDe,
+};
