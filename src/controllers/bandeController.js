@@ -7,10 +7,37 @@ const { getSujetsRestants } = require("./venteController");
 const JOUR_OUVERTURE_VENTE = 25;
 
 async function creerBande(req, res) {
-  const { poussinsCommandes, poussinsRecus, mortsALArrivee, provenance, souche, poidsReceptionG } = req.body;
+  const { poussinsCommandes, poussinsRecus, mortsALArrivee, souche, poidsReceptionG } = req.body;
 
-  if (!poussinsRecus || !provenance) {
-    return res.status(400).json({ erreur: "Poussins reçus et provenance sont obligatoires." });
+  // Qui a payé les poussins (migration 019), comme pour une réception de
+  // stock : l'ouvrier saisit alors le prix d'un poussin et la provenance ;
+  // si c'est le propriétaire, les deux restent vides et c'est lui qui les
+  // renseigne depuis son écran « Réceptions de stock ».
+  // Une ancienne version de l'appli n'envoie pas payePar : on considère que
+  // le propriétaire a payé, et le prix lui revient.
+  const payePar = req.body.payePar === "ouvrier" ? "ouvrier" : "proprietaire";
+  const parOuvrier = payePar === "ouvrier";
+  const prixUnitairePoussin = parOuvrier ? Number(req.body.prixUnitairePoussin) : null;
+  const provenance = String(req.body.provenance ?? "").trim() || null;
+
+  // Tous les champs sont obligatoires ; seuls provenance et prix reviennent
+  // au propriétaire quand c'est lui qui a payé.
+  if (
+    poussinsCommandes == null || poussinsCommandes === "" ||
+    !poussinsRecus ||
+    mortsALArrivee == null || mortsALArrivee === "" ||
+    !String(souche ?? "").trim() ||
+    !(Number(poidsReceptionG) > 0)
+  ) {
+    return res.status(400).json({
+      erreur: "Commandés, reçus, morts à l'arrivée, souche et poids sont obligatoires.",
+    });
+  }
+  if (parOuvrier && !provenance) {
+    return res.status(400).json({ erreur: "La provenance est obligatoire." });
+  }
+  if (parOuvrier && !(prixUnitairePoussin > 0)) {
+    return res.status(400).json({ erreur: "Le prix d'un poussin est obligatoire." });
   }
 
   try {
@@ -27,10 +54,14 @@ async function creerBande(req, res) {
 
     const resultat = await pool.query(
       `INSERT INTO bandes
-        (poulailler_id, numero, poussins_commandes, poussins_recus, morts_a_larrivee, provenance, souche, poids_reception_g)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (poulailler_id, numero, poussins_commandes, poussins_recus, morts_a_larrivee,
+         provenance, souche, poids_reception_g, poussins_paye_par, prix_unitaire_poussin)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [poulaillerId, numero, poussinsCommandes || null, poussinsRecus, mortsALArrivee || 0, provenance, souche || null, poidsReceptionG || null]
+      [
+        poulaillerId, numero, poussinsCommandes, poussinsRecus, mortsALArrivee,
+        provenance, String(souche).trim(), Number(poidsReceptionG), payePar, prixUnitairePoussin,
+      ]
     );
 
     res.status(201).json(resultat.rows[0]);

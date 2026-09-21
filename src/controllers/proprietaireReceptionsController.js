@@ -11,9 +11,11 @@ const { parProprietaire } = require("../services/journal");
 // Le rattachement d'une réception à une bande se fait par date (vue
 // receptions_ferme), jamais recalculé ici.
 
-const ORIGINES = { produit: "stock_receptions", autre: "stock_autres_produits" };
+// 'poussins' : les poussins d'une bande, identifiés par la bande (019).
+const ORIGINES = { produit: "stock_receptions", autre: "stock_autres_produits", poussins: "bandes" };
 
 const LIBELLE_POSTE = {
+  poussins: "Poussins",
   aliment: "Aliment",
   gaz: "Gaz",
   litiere: "Litière",
@@ -58,7 +60,9 @@ function enveloppe(ligne) {
     nom: ligne.nom,
     unite: sacs ? "sacs" : ligne.unite,
     // Unité du prix saisi : « Fcfa / sac de 50 kg » pour l'aliment.
-    unitePrix: sacs ? `sac de ${POIDS_SAC_KG} kg` : ligne.unite,
+    unitePrix: sacs
+      ? `sac de ${POIDS_SAC_KG} kg`
+      : ligne.origine === "poussins" ? "poussin" : ligne.unite,
     quantite,
     prixUnitaire: prix,
     montant,
@@ -124,21 +128,26 @@ async function renseignerPrix(req, res) {
   // Prix tel que le propriétaire le connaît : au sac pour l'aliment (voir
   // POIDS_SAC_KG), à l'unité du stock pour le reste.
   const { prixUnitaire } = req.body;
+  // Poussins payés par le propriétaire : l'ouvrier n'a saisi ni le prix ni la
+  // provenance (le couvoir), c'est donc au propriétaire de donner les deux.
+  const provenance = String(req.body.provenance ?? "").trim() || null;
 
   const table = ORIGINES[origine];
   if (!table) {
     return res.status(400).json({ erreur: "Type de réception inconnu." });
   }
-  if (prixUnitaire == null || Number.isNaN(Number(prixUnitaire)) || Number(prixUnitaire) < 0) {
+  if (prixUnitaire == null || Number.isNaN(Number(prixUnitaire)) || Number(prixUnitaire) <= 0) {
     return res.status(400).json({ erreur: "Prix unitaire invalide." });
+  }
+  if (origine === "poussins" && !provenance) {
+    return res.status(400).json({ erreur: "Indiquez la provenance des poussins." });
   }
 
   // Le poulailler doit être à lui, et le prix doit encore manquer : un prix
   // déjà saisi par l'ouvrier ne se corrige pas depuis cet écran, sans quoi
   // une dépense pourrait changer après coup sans trace.
-  const condition =
-    origine === "produit"
-      ? `UPDATE stock_receptions r
+  const REQUETES = {
+    produit: `UPDATE stock_receptions r
             SET prix_unitaire = $1::numeric
                   / CASE WHEN sp.produit_id = 'aliment' THEN ${POIDS_SAC_KG} ELSE 1 END
           FROM stock_produits sp, poulaillers pl, fermes f
@@ -150,8 +159,8 @@ async function renseignerPrix(req, res) {
             AND r.prix_unitaire IS NULL
           RETURNING r.id, sp.poulailler_id, sp.nom AS produit, sp.unite,
                     (sp.produit_id = 'aliment') AS en_sacs,
-                    r.quantite_recue AS quantite, r.date_reception`
-      : `UPDATE stock_autres_produits r
+                    r.quantite_recue AS quantite, r.date_reception`,
+    autre: `UPDATE stock_autres_produits r
             SET prix_unitaire = $1
           FROM poulaillers pl, fermes f
           WHERE r.id = $2
@@ -160,14 +169,26 @@ async function renseignerPrix(req, res) {
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
           RETURNING r.id, r.poulailler_id, r.nom AS produit, 'unités' AS unite,
-                    false AS en_sacs, r.quantite, r.date_reception`;
+                    false AS en_sacs, r.quantite, r.date_reception`,
+    poussins: `UPDATE bandes r
+            SET prix_unitaire_poussin = $1, provenance = $4
+          FROM poulaillers pl, fermes f
+          WHERE r.id = $2
+            AND pl.id = r.poulailler_id
+            AND f.id = pl.ferme_id
+            AND f.proprietaire_id = $3
+            AND r.prix_unitaire_poussin IS NULL
+          RETURNING r.id, r.poulailler_id, 'Poussins' AS produit, 'sujets' AS unite,
+                    false AS en_sacs, r.id AS bande_id, r.provenance,
+                    coalesce(r.poussins_commandes, r.poussins_recus) AS quantite,
+                    r.date_debut AS date_reception`,
+  };
+  const condition = REQUETES[origine];
+  const parametres = [Number(prixUnitaire), receptionId, req.utilisateur.id];
+  if (origine === "poussins") parametres.push(provenance);
 
   try {
-    const { rows, rowCount } = await pool.query(condition, [
-      Number(prixUnitaire),
-      receptionId,
-      req.utilisateur.id,
-    ]);
+    const { rows, rowCount } = await pool.query(condition, parametres);
 
     if (rowCount === 0) {
       return res.status(404).json({
@@ -182,6 +203,7 @@ async function renseignerPrix(req, res) {
       cibleType: "reception",
       cibleId: Number(receptionId),
       poulaillerId: ligne.poulailler_id,
+      bandeId: ligne.bande_id,
       details: {
         origine,
         produit: ligne.produit,
@@ -190,7 +212,10 @@ async function renseignerPrix(req, res) {
           : Number(ligne.quantite),
         unite: ligne.en_sacs ? "sacs" : ligne.unite,
         prixUnitaire: Number(prixUnitaire),
-        unitePrix: ligne.en_sacs ? `sac de ${POIDS_SAC_KG} kg` : ligne.unite,
+        unitePrix: ligne.en_sacs
+          ? `sac de ${POIDS_SAC_KG} kg`
+          : origine === "poussins" ? "poussin" : ligne.unite,
+        ...(ligne.provenance ? { provenance: ligne.provenance } : {}),
         dateReception: ligne.date_reception,
       },
     });

@@ -53,10 +53,13 @@ const REQUETE_BANDES_POULAILLER = `
 
 // Un bilan est complet quand plus aucun prix ne manque : sujets ramassés
 // pas encore détaillés, réceptions payées par le propriétaire pas encore
-// chiffrées. Tant qu'il en manque, le bénéfice affiché serait faux : l'écran
-// montre alors un bilan provisoire et la liste de ce qu'il reste à chiffrer.
+// chiffrées, poussins sans prix (019). Tant qu'il en manque, le bénéfice
+// affiché serait faux : l'écran montre alors un bilan provisoire et la liste
+// de ce qu'il reste à chiffrer.
 const bilanComplet = (b) =>
-  Number(b.sujets_sans_prix) === 0 && Number(b.receptions_sans_prix) === 0;
+  Number(b.sujets_sans_prix) === 0 &&
+  Number(b.receptions_sans_prix) === 0 &&
+  b.poussins_sans_prix !== true;
 
 async function historiqueBandes(req, res) {
   const { poulaillerId } = req.params;
@@ -104,7 +107,8 @@ async function detailBilan(req, res) {
   try {
     const { rows } = await pool.query(
       `SELECT bb.*, pl.nom AS poulailler_nom,
-              b.poussins_recus, b.morts_a_larrivee
+              b.poussins_recus, b.morts_a_larrivee, b.poussins_commandes,
+              b.poussins_paye_par, b.prix_unitaire_poussin
          FROM bilans_bandes bb
          JOIN bandes b ON b.id = bb.bande_id
          JOIN poulaillers pl ON pl.id = bb.poulailler_id
@@ -121,7 +125,9 @@ async function detailBilan(req, res) {
 
     const [depenses, ventes] = await Promise.all([
       pool.query(
-        "SELECT poste, quantite, cout FROM depenses_bandes WHERE bande_id = $1 ORDER BY poste",
+        // Les poussins ont leur propre ligne en tête du bilan (reception).
+        `SELECT poste, quantite, cout FROM depenses_bandes
+          WHERE bande_id = $1 AND poste <> 'poussins' ORDER BY poste`,
         [bandeId]
       ),
       // Le registre : ventes à la ferme, et lignes de détail des ramassages.
@@ -159,6 +165,7 @@ async function detailBilan(req, res) {
       // Réceptions sans prix : le total des dépenses est incomplet tant
       // qu'elles ne sont pas chiffrées.
       receptionsSansPrix: Number(bilan.receptions_sans_prix),
+      poussinsSansPrix: bilan.poussins_sans_prix === true,
       complet: bilanComplet(bilan),
 
       mortalite: {
@@ -166,10 +173,21 @@ async function detailBilan(req, res) {
         pourcentage: bilan.taux_mortalite ? Number(bilan.taux_mortalite) : 0,
       },
 
-      reception: {
-        recus: Number(bilan.poussins_recus),
-        mortsArrivee: Number(bilan.morts_a_larrivee),
-      },
+      // Coût des poussins : commandés × prix (ce que facture le couvoir),
+      // reçus à défaut — même calcul que la vue receptions_ferme (019).
+      reception: (() => {
+        const factures = Number(bilan.poussins_commandes ?? bilan.poussins_recus);
+        const prix =
+          bilan.prix_unitaire_poussin === null ? null : Number(bilan.prix_unitaire_poussin);
+        return {
+          recus: Number(bilan.poussins_recus),
+          mortsArrivee: Number(bilan.morts_a_larrivee),
+          factures,
+          payePar: bilan.poussins_paye_par,
+          prixUnitaire: prix,
+          cout: prix === null ? 0 : factures * prix,
+        };
+      })(),
 
       depenses: depenses.rows.map((d) => ({
         poste: d.poste,
