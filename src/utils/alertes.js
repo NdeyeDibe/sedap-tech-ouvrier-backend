@@ -101,6 +101,24 @@ const SAISIES_QUOTIDIENNES = {
   alimentation: "aliments",
 };
 
+// Délai laissé au propriétaire pour chiffrer ce qu'il a payé ou ramassé.
+const JOURS_A_CHIFFRER_URGENT = 3;
+
+// Ce qu'il reste à chiffrer sur une bande, ou null s'il ne manque rien.
+function aChiffrerBande(bande, maintenant = new Date()) {
+  const elements = [];
+  const stock = (bande.receptionsSansPrix || 0) - (bande.poussinsSansPrix ? 1 : 0);
+
+  if (bande.poussinsSansPrix) elements.push("poussins");
+  if (stock > 0) elements.push(`${stock} réception${stock > 1 ? "s" : ""} de stock`);
+  if (bande.sujetsSansPrix > 0) elements.push(`${bande.sujetsSansPrix} sujets ramassés`);
+  if (elements.length === 0) return null;
+
+  const depuis = bande.aChiffrerDepuis ? new Date(bande.aChiffrerDepuis) : maintenant;
+  const jours = Math.floor((maintenant - depuis) / 86400000);
+  return { elements, jours };
+}
+
 // Alertes actives d'une bande, de la plus grave à la plus calme.
 //
 // Chaque alerte porte une « cle » stable : c'est elle qui permet de ne
@@ -156,16 +174,23 @@ function alertesBande(bande) {
     });
   }
 
-  // Réception payée par le propriétaire : l'ouvrier a déclaré la quantité,
-  // le prix reste à sa charge. Sans lui, la dépense manque au bilan.
-  if (bande.receptionsSansPrix > 0) {
-    const n = bande.receptionsSansPrix;
+  // Prix que seul le propriétaire connaît : poussins et réceptions qu'il a
+  // payés (l'ouvrier n'a déclaré que la quantité), sujets partis en
+  // ramassage pas encore détaillés. Sans eux, le bilan est faux.
+  // Orange dès qu'un prix manque ; rouge quand le plus ancien attend depuis
+  // JOURS_A_CHIFFRER_URGENT jours (retour Ndeye : « forcer le propriétaire
+  // à renseigner »).
+  const aChiffrer = aChiffrerBande(bande);
+  if (aChiffrer) {
+    const urgent = aChiffrer.jours >= JOURS_A_CHIFFRER_URGENT;
     alertes.push({
       type: "reception",
       cle: "prix",
-      niveau: NIVEAU.SURVEILLER,
-      titre: "Réception à chiffrer",
-      message: `${n} réception${n > 1 ? "s" : ""} de stock sans prix`,
+      niveau: urgent ? NIVEAU.URGENT : NIVEAU.SURVEILLER,
+      titre: "À chiffrer",
+      message:
+        `Sans prix : ${aChiffrer.elements.join(", ")}` +
+        (urgent ? ` — depuis ${aChiffrer.jours} jours` : ""),
     });
   }
 
@@ -192,6 +217,8 @@ function statutBande(bande) {
 
 module.exports = {
   NIVEAU,
+  JOURS_A_CHIFFRER_URGENT,
+  aChiffrerBande,
   KG_PAR_SAC,
   kgDistribues,
   niveauLePlusGrave,

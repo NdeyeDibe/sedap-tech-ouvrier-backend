@@ -117,6 +117,7 @@ const LIBELLE_POSTE = {
   antistress: 'Antistress',
   vaccin: 'Médicaments & vaccins',
   autres: 'Autres produits',
+  poussins: 'Poussins',
 };
 
 const REQUETE_DEPENSES = `

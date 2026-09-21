@@ -85,10 +85,25 @@ const REQUETE_FERME = `
 
     -- Réceptions rattachées à cette bande dont le prix n'a pas encore été
     -- renseigné par le propriétaire (vue receptions_ferme, migration 015).
+    -- Les poussins en font partie depuis 019 ; poussins_sans_prix les isole
+    -- pour le message de l'alerte.
     coalesce((
       SELECT count(*) FROM receptions_ferme rf
        WHERE rf.bande_id = b.id AND rf.prix_unitaire IS NULL
     ), 0) AS receptions_sans_prix,
+    (b.prix_unitaire_poussin IS NULL) AS poussins_sans_prix,
+
+    -- Depuis quand le plus ancien prix manque : réception (poussins compris)
+    -- ou lot de ramassage pas entièrement détaillé. Sert à passer l'alerte
+    -- « À chiffrer » au rouge (utils/alertes.js). least() ignore les NULL.
+    least(
+      (SELECT min(rf.date_reception) FROM receptions_ferme rf
+        WHERE rf.bande_id = b.id AND rf.prix_unitaire IS NULL),
+      (SELECT min(v.date_vente) FROM ventes v
+        WHERE v.bande_id = b.id AND v.type_vente = 'ramassage'
+          AND v.quantite > coalesce((SELECT sum(d.quantite) FROM ventes_details d
+                                      WHERE d.vente_id = v.id), 0))
+    ) AS a_chiffrer_depuis,
 
     coalesce((
       SELECT sum(sp.quantite) FROM stock_produits sp
@@ -170,6 +185,9 @@ function construireBande(ligne, retards = []) {
       : null,
     pesageManque: pesage ? { jour: pesage.jour_debut } : null,
     receptionsSansPrix: Number(ligne.receptions_sans_prix),
+    poussinsSansPrix: ligne.poussins_sans_prix === true,
+    sujetsSansPrix: Number(ligne.sujets_sans_prix ?? 0),
+    aChiffrerDepuis: ligne.a_chiffrer_depuis,
     saisiesManquantes,
   };
 }
