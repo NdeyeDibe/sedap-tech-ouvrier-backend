@@ -10,6 +10,7 @@ const {
 } = require("../controllers/adminAuthController");
 const { creerOuvrierResponsable } = require("../controllers/adminOuvriersController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
+const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -29,6 +30,9 @@ router.patch("/auth/mot-de-passe", modifierMotDePasse);
 
 // ------------------------------------------------------- tableau de bord
 router.get("/tableau-de-bord", tableauDeBord);
+
+// ---------------------------------------------------------------- fermes
+router.get("/fermes/:id", detailFerme);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.
