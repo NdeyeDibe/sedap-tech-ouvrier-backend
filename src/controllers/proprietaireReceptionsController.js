@@ -23,6 +23,14 @@ const LIBELLE_POSTE = {
   autres: "Autres produits",
 };
 
+// L'aliment est suivi en kg dans le stock, mais il s'achète au sac : le
+// propriétaire connaît le prix du SAC, pas celui du kg. On lui présente donc
+// l'aliment en sacs, et on reconvertit en kg le prix qu'il saisit. Sans ça,
+// il tape le prix du sac là où la base attend celui du kg : dépense × 50.
+// Même poids que l'appli ouvrier (règle CDC ouvrier VII : 1 sac = 50 kg).
+const POIDS_SAC_KG = 50;
+const enSacs = (ligne) => ligne.origine === "produit" && ligne.poste === "aliment";
+
 async function poulaillerAutorise(poulaillerId, proprietaireId) {
   const { rows } = await pool.query(
     `SELECT pl.id, pl.nom
@@ -35,7 +43,12 @@ async function poulaillerAutorise(poulaillerId, proprietaireId) {
 }
 
 function enveloppe(ligne) {
-  const prix = ligne.prix_unitaire === null ? null : Number(ligne.prix_unitaire);
+  const prixBase = ligne.prix_unitaire === null ? null : Number(ligne.prix_unitaire);
+  const sacs = enSacs(ligne);
+  // Le montant ne change pas : seule l'unité d'affichage change.
+  const montant = prixBase === null ? null : Number(ligne.quantite) * prixBase;
+  const quantite = sacs ? Number(ligne.quantite) / POIDS_SAC_KG : Number(ligne.quantite);
+  const prix = prixBase === null ? null : sacs ? prixBase * POIDS_SAC_KG : prixBase;
 
   return {
     origine: ligne.origine,
@@ -43,10 +56,12 @@ function enveloppe(ligne) {
     poste: ligne.poste,
     libelle: LIBELLE_POSTE[ligne.poste] ?? ligne.poste,
     nom: ligne.nom,
-    unite: ligne.unite,
-    quantite: Number(ligne.quantite),
+    unite: sacs ? "sacs" : ligne.unite,
+    // Unité du prix saisi : « Fcfa / sac de 50 kg » pour l'aliment.
+    unitePrix: sacs ? `sac de ${POIDS_SAC_KG} kg` : ligne.unite,
+    quantite,
     prixUnitaire: prix,
-    montant: prix === null ? null : Number(ligne.quantite) * prix,
+    montant,
     provenance: ligne.provenance,
     date: ligne.date_reception,
     payePar: ligne.source,
@@ -106,6 +121,8 @@ async function registreReceptions(req, res) {
 
 async function renseignerPrix(req, res) {
   const { origine, receptionId } = req.params;
+  // Prix tel que le propriétaire le connaît : au sac pour l'aliment (voir
+  // POIDS_SAC_KG), à l'unité du stock pour le reste.
   const { prixUnitaire } = req.body;
 
   const table = ORIGINES[origine];
@@ -122,7 +139,8 @@ async function renseignerPrix(req, res) {
   const condition =
     origine === "produit"
       ? `UPDATE stock_receptions r
-            SET prix_unitaire = $1
+            SET prix_unitaire = $1::numeric
+                  / CASE WHEN sp.produit_id = 'aliment' THEN ${POIDS_SAC_KG} ELSE 1 END
           FROM stock_produits sp, poulaillers pl, fermes f
           WHERE r.id = $2
             AND sp.id = r.stock_produit_id
@@ -130,7 +148,8 @@ async function renseignerPrix(req, res) {
             AND f.id = pl.ferme_id
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
-          RETURNING r.id, sp.poulailler_id, sp.nom AS produit,
+          RETURNING r.id, sp.poulailler_id, sp.nom AS produit, sp.unite,
+                    (sp.produit_id = 'aliment') AS en_sacs,
                     r.quantite_recue AS quantite, r.date_reception`
       : `UPDATE stock_autres_produits r
             SET prix_unitaire = $1
@@ -140,8 +159,8 @@ async function renseignerPrix(req, res) {
             AND f.id = pl.ferme_id
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
-          RETURNING r.id, r.poulailler_id, r.nom AS produit,
-                    r.quantite, r.date_reception`;
+          RETURNING r.id, r.poulailler_id, r.nom AS produit, 'unités' AS unite,
+                    false AS en_sacs, r.quantite, r.date_reception`;
 
   try {
     const { rows, rowCount } = await pool.query(condition, [
@@ -156,17 +175,23 @@ async function renseignerPrix(req, res) {
       });
     }
 
+    const ligne = rows[0];
+
     parProprietaire(req, {
       action: "prix_reception_renseigne",
       cibleType: "reception",
       cibleId: Number(receptionId),
-      poulaillerId: rows[0].poulailler_id,
+      poulaillerId: ligne.poulailler_id,
       details: {
         origine,
-        produit: rows[0].produit,
-        quantite: Number(rows[0].quantite),
+        produit: ligne.produit,
+        quantite: ligne.en_sacs
+          ? Number(ligne.quantite) / POIDS_SAC_KG
+          : Number(ligne.quantite),
+        unite: ligne.en_sacs ? "sacs" : ligne.unite,
         prixUnitaire: Number(prixUnitaire),
-        dateReception: rows[0].date_reception,
+        unitePrix: ligne.en_sacs ? `sac de ${POIDS_SAC_KG} kg` : ligne.unite,
+        dateReception: ligne.date_reception,
       },
     });
 
