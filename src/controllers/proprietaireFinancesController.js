@@ -51,6 +51,13 @@ const REQUETE_BANDES_POULAILLER = `
    ORDER BY bb.numero DESC
 `;
 
+// Un bilan est complet quand plus aucun prix ne manque : sujets ramassés
+// pas encore détaillés, réceptions payées par le propriétaire pas encore
+// chiffrées. Tant qu'il en manque, le bénéfice affiché serait faux : l'écran
+// montre alors un bilan provisoire et la liste de ce qu'il reste à chiffrer.
+const bilanComplet = (b) =>
+  Number(b.sujets_sans_prix) === 0 && Number(b.receptions_sans_prix) === 0;
+
 async function historiqueBandes(req, res) {
   const { poulaillerId } = req.params;
 
@@ -69,6 +76,7 @@ async function historiqueBandes(req, res) {
         // Le bilan n'a de sens qu'une fois la bande close : tant que la
         // vente court, dépenses et recettes bougent encore chaque jour.
         beneficeNet: b.statut === "terminee" ? Number(b.benefice_net) : null,
+        complet: bilanComplet(b),
         mortalite: b.taux_mortalite ? Number(b.taux_mortalite) : 0,
       }))
     );
@@ -138,6 +146,7 @@ async function detailBilan(req, res) {
 
     res.json({
       bandeId: Number(bandeId),
+      poulaillerId: bilan.poulailler_id,
       poulailler: bilan.poulailler_nom,
       numero: bilan.numero,
       statut: bilan.statut,
@@ -150,6 +159,7 @@ async function detailBilan(req, res) {
       // Réceptions sans prix : le total des dépenses est incomplet tant
       // qu'elles ne sont pas chiffrées.
       receptionsSansPrix: Number(bilan.receptions_sans_prix),
+      complet: bilanComplet(bilan),
 
       mortalite: {
         sujets: Number(bilan.morts),
