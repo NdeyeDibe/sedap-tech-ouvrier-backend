@@ -253,44 +253,11 @@ async function terminerBande(req, res) {
   }
 }
 
-// PATCH /api/bandes/:id/jour-test — TODO(TEST), à retirer avant la
-// vraie livraison. Le jour d'une bande est calculé à partir de
-// date_debut (vraie date, pas une valeur qu'on peut juste changer) —
-// cet endpoint recule artificiellement date_debut pour simuler "on est
-// au jour X", utile pour tester rapidement les bandeaux Vaccin/Pesage
-// ou l'ouverture de la vente sans attendre le vrai nombre de jours.
-async function forcerJourPourTest(req, res) {
-  const { id } = req.params;
-  const { jour } = req.body;
-
-  if (!jour || jour < 1) {
-    return res.status(400).json({ erreur: "jour doit être un nombre positif." });
-  }
-
-  try {
-    const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
-    const resultat = await pool.query(
-      `UPDATE bandes SET date_debut = now() - ($1 - 1) * INTERVAL '1 day'
-       WHERE id = $2 AND poulailler_id = $3
-       RETURNING *, (now()::date - date_debut::date)::int + 1 AS jour_actuel`,
-      [jour, id, poulaillerId]
-    );
-    if (resultat.rows.length === 0) {
-      return res.status(404).json({ erreur: "Bande introuvable." });
-    }
-    res.json(resultat.rows[0]);
-  } catch (erreur) {
-    console.error("Erreur forcer jour test :", erreur);
-    res.status(500).json({ erreur: "Erreur serveur." });
-  }
-}
-
 module.exports = {
   creerBande,
   listerBandes,
   bandeActive,
   demarrerVente,
   terminerBande,
-  forcerJourPourTest,
   JOUR_OUVERTURE_VENTE,
 };

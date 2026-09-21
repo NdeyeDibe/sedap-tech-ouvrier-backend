@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { preInscrire, verifierTelephone, creerPin, connexion, moi } = require("../controllers/authController");
+const { verifierTelephone, creerPin, connexion, moi } = require("../controllers/authController");
 const {
   optionsInscription,
   verifierInscription,
@@ -9,11 +9,9 @@ const {
 } = require("../controllers/webauthnController");
 const verifierToken = require("../middleware/auth");
 
-// TODO(INTERFACE PROPRIÉTAIRE) : /pre-inscrire tient lieu de l'interface
-// propriétaire (pas encore construite) — à sécuriser/déplacer une fois
-// qu'elle existera (le propriétaire seul doit pouvoir enregistrer un
-// ouvrier, pas n'importe qui).
-router.post("/pre-inscrire", preInscrire);
+// Pas de route d'inscription : le compte de l'ouvrier responsable est créé
+// par SEDAP depuis l'interface admin (POST /api/admin/poulaillers/:id/ouvrier).
+// L'ancienne route publique /pre-inscrire a été supprimée.
 router.get("/verifier-telephone/:telephone", verifierTelephone);
 router.post("/creer-pin", creerPin);
 router.post("/connexion", connexion);

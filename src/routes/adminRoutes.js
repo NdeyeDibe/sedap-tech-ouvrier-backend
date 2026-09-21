@@ -8,6 +8,7 @@ const {
   modifierMoi,
   modifierMotDePasse,
 } = require("../controllers/adminAuthController");
+const { creerOuvrierResponsable } = require("../controllers/adminOuvriersController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -24,5 +25,9 @@ router.use(exigerAdmin);
 router.get("/auth/moi", moi);
 router.patch("/auth/moi", modifierMoi);
 router.patch("/auth/mot-de-passe", modifierMotDePasse);
+
+// ------------------------------------------------ ouvriers responsables
+// Remplace l'ancienne route publique /api/auth/pre-inscrire.
+router.post("/poulaillers/:id/ouvrier", creerOuvrierResponsable);
 
 module.exports = router;

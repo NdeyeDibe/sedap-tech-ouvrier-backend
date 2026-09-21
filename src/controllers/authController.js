@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../db/pool");
+const { normaliser, NB_CHIFFRES } = require("../utils/telephone");
 
 const TOUR_DE_HACHAGE = 10;
 const TENTATIVES_MAX = 3;
@@ -9,76 +10,42 @@ function genererToken(ouvrierId) {
   return jwt.sign({ ouvrierId }, process.env.JWT_SECRET, { expiresIn: "30d" });
 }
 
-// PRÉ-INSCRIPTION — TODO(INTERFACE PROPRIÉTAIRE) : cet endpoint tient
-// lieu de l'interface propriétaire, qui n'existe pas encore dans ce
-// projet. C'est LUI qui doit créer le compte de l'ouvrier (nom, prénom,
-// téléphone) avant que celui-ci ne reçoive le lien de l'appli par SMS.
-// Pas de PIN ici : l'ouvrier le définit lui-même à sa première
-// connexion (voir creerPin ci-dessous). Volontairement SANS
-// authentification pour l'instant (aucun rôle "propriétaire" n'existe
-// encore) — à sécuriser dès que l'interface propriétaire sera bâtie.
-async function preInscrire(req, res) {
-  const { telephone, nom, prenom } = req.body;
+// Le compte d'un ouvrier est créé par SEDAP depuis l'interface admin
+// (POST /api/admin/poulaillers/:id/ouvrier). L'ancienne route publique
+// /api/auth/pre-inscrire, qui permettait à n'importe qui d'en créer un, a
+// été supprimée. L'ouvrier ne fait ici que définir son PIN sur un compte
+// qui existe déjà, puis se connecter.
 
-  if (!telephone) {
-    return res.status(400).json({ erreur: "Téléphone requis." });
-  }
+// Un numéro se reconnaît sur ses 9 derniers chiffres, comme chez le
+// propriétaire : « 77 248 50 06 », « 772485006 », « +221772485006 » et
+// « 221772485006 » désignent le même ouvrier. Jusqu'ici la comparaison se
+// faisait caractère pour caractère, et un compte créé avec un « + » ne
+// pouvait plus se connecter depuis un téléphone qui l'envoyait sans.
+const REQUETE_PAR_TELEPHONE = `
+  SELECT id, pin_hash, prenom, tentatives_echouees, compte_verrouille
+    FROM ouvriers
+   WHERE right(regexp_replace(telephone, '\\D', '', 'g'), ${NB_CHIFFRES}) = $1
+   LIMIT 1
+`;
 
-  const client = await pool.connect();
-  try {
-    const dejaExistant = await client.query(
-      "SELECT id FROM ouvriers WHERE telephone = $1",
-      [telephone]
-    );
-    if (dejaExistant.rows.length > 0) {
-      return res.status(409).json({ erreur: "Ce numéro de téléphone a déjà un compte." });
-    }
-
-    await client.query("BEGIN");
-
-    const resultatOuvrier = await client.query(
-      `INSERT INTO ouvriers (telephone, nom, prenom)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [telephone, nom || null, prenom || null]
-    );
-    const ouvrierId = resultatOuvrier.rows[0].id;
-
-    const resultatPoulailler = await client.query(
-      "INSERT INTO poulaillers (ouvrier_id) VALUES ($1) RETURNING id",
-      [ouvrierId]
-    );
-    const poulaillerId = resultatPoulailler.rows[0].id;
-
-    await seedStockInitial(client, poulaillerId);
-
-    await client.query("COMMIT");
-    res.status(201).json({ ouvrierId, telephone });
-  } catch (erreur) {
-    await client.query("ROLLBACK");
-    console.error("Erreur pré-inscription :", erreur);
-    res.status(500).json({ erreur: "Erreur serveur pendant la pré-inscription." });
-  } finally {
-    client.release();
-  }
+// Moins de 9 chiffres : la comparaison n'aurait pas de sens (right('', 9)
+// vaudrait '' des deux côtés). On répond « inconnu » sans interroger la base.
+async function chercherOuvrier(telephone) {
+  const chiffres = normaliser(telephone);
+  if (chiffres.length !== NB_CHIFFRES) return null;
+  const { rows } = await pool.query(REQUETE_PAR_TELEPHONE, [chiffres]);
+  return rows[0] ?? null;
 }
 
-// L'ouvrier définit son code PIN sur un compte DÉJÀ pré-enregistré par
-// le propriétaire (voir preInscrire ci-dessus) — ne crée jamais de
-// nouveau compte lui-même.
 // Vérifie si un numéro est reconnu AVANT de laisser l'ouvrier taper un
 // code (retour Ndeye : sans ça, on le laissait créer/confirmer un PIN
 // en entier avant de lui dire "numéro non reconnu" — confus et inutile).
 async function verifierTelephone(req, res) {
-  const { telephone } = req.params;
   try {
-    const resultat = await pool.query(
-      "SELECT id, pin_hash FROM ouvriers WHERE telephone = $1",
-      [telephone]
-    );
-    if (resultat.rows.length === 0) {
+    const ouvrier = await chercherOuvrier(req.params.telephone);
+    if (!ouvrier) {
       return res.json({ existe: false, aDejaUnPin: false, aUnPasskey: false });
     }
-    const ouvrier = resultat.rows[0];
 
     // IMPORTANT : la vraie source de vérité pour "Face ID est-il
     // activé pour ce compte ?" est ICI (en base), pas un simple repère
@@ -112,16 +79,11 @@ async function creerPin(req, res) {
   }
 
   try {
-    const resultat = await pool.query(
-      "SELECT id, pin_hash, prenom FROM ouvriers WHERE telephone = $1",
-      [telephone]
-    );
+    const ouvrier = await chercherOuvrier(telephone);
 
-    if (resultat.rows.length === 0) {
+    if (!ouvrier) {
       return res.status(404).json({ erreur: "Numéro non reconnu. Demandez à votre responsable de vous enregistrer d'abord." });
     }
-
-    const ouvrier = resultat.rows[0];
 
     if (ouvrier.pin_hash) {
       return res.status(409).json({ erreur: "Ce compte a déjà un code PIN. Utilisez plutôt la connexion." });
@@ -138,39 +100,6 @@ async function creerPin(req, res) {
   }
 }
 
-// Catalogue de produits/variantes initial — reproduit fidèlement
-// lib/stockMock.js du frontend, pour que les deux restent cohérents.
-// Toutes les quantités démarrent à 0 (un nouveau poulailler n'a encore
-// rien reçu) — c'est la réception (Stock > Recevoir) qui les remplit.
-const CATALOGUE_STOCK_INITIAL = [
-  { produitId: "aliment", varianteId: "demarrage", nom: "Démarrage", unite: "kg" },
-  { produitId: "aliment", varianteId: "croissance", nom: "Croissance", unite: "kg" },
-  { produitId: "aliment", varianteId: "finition", nom: "Finition", unite: "kg" },
-  { produitId: "gaz", varianteId: "6kg", nom: "Bouteille 6 kg", unite: "bouteilles" },
-  { produitId: "gaz", varianteId: "9kg", nom: "Bouteille 9 kg", unite: "bouteilles" },
-  { produitId: "litiere", varianteId: "balle_riz", nom: "Balle de riz", unite: "sacs" },
-  { produitId: "litiere", varianteId: "copeaux", nom: "Copeaux de bois", unite: "sacs" },
-  { produitId: "litiere", varianteId: "coque_arachide", nom: "Coque d'arachide", unite: "sacs" },
-  { produitId: "vitamines", varianteId: "pot", nom: "Pot 1 kg", unite: "unités" },
-  { produitId: "vitamines", varianteId: "sachet", nom: "Sachet 100 g", unite: "unités" },
-  { produitId: "antistress", varianteId: "pot", nom: "Pot 1 kg", unite: "unités" },
-  { produitId: "antistress", varianteId: "sachet", nom: "Sachet 100 g", unite: "unités" },
-  { produitId: "vaccin", varianteId: "gumboro_l", nom: "Gumboro L", unite: "doses" },
-  { produitId: "vaccin", varianteId: "h120", nom: "H120", unite: "doses" },
-  { produitId: "vaccin", varianteId: "gumboro_ibdl", nom: "Gumboro IBDL", unite: "doses" },
-  { produitId: "vaccin", varianteId: "lasota", nom: "Lasota", unite: "doses" },
-];
-
-async function seedStockInitial(client, poulaillerId) {
-  for (const p of CATALOGUE_STOCK_INITIAL) {
-    await client.query(
-      `INSERT INTO stock_produits (poulailler_id, produit_id, variante_id, nom, unite, quantite)
-       VALUES ($1, $2, $3, $4, $5, 0)`,
-      [poulaillerId, p.produitId, p.varianteId, p.nom, p.unite]
-    );
-  }
-}
-
 async function connexion(req, res) {
   const { telephone, pin } = req.body;
 
@@ -179,16 +108,11 @@ async function connexion(req, res) {
   }
 
   try {
-    const resultat = await pool.query(
-      "SELECT id, pin_hash, prenom, tentatives_echouees, compte_verrouille FROM ouvriers WHERE telephone = $1",
-      [telephone]
-    );
+    const ouvrier = await chercherOuvrier(telephone);
 
-    if (resultat.rows.length === 0) {
+    if (!ouvrier) {
       return res.status(404).json({ erreur: "Aucun compte trouvé pour ce numéro." });
     }
-
-    const ouvrier = resultat.rows[0];
 
     if (ouvrier.compte_verrouille) {
       return res.status(403).json({
@@ -254,4 +178,4 @@ async function moi(req, res) {
   }
 }
 
-module.exports = { preInscrire, verifierTelephone, creerPin, connexion, moi };
+module.exports = { verifierTelephone, creerPin, connexion, moi };

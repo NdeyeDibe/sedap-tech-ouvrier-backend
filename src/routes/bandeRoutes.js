@@ -7,7 +7,6 @@ const {
   bandeActive,
   demarrerVente,
   terminerBande,
-  forcerJourPourTest,
 } = require("../controllers/bandeController");
 
 router.use(verifierToken);
@@ -23,7 +22,5 @@ router.patch("/:id/demarrer-vente", demarrerVente);
 // Clôture manuelle — filet de sécurité. La base ferme normalement la bande
 // d'elle-même dès que le poulailler est vide.
 router.patch("/:id/terminer", terminerBande);
-
-router.patch("/:id/jour-test", forcerJourPourTest);
 
 module.exports = router;
