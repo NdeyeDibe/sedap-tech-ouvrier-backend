@@ -74,18 +74,12 @@ async function verifierIdentite(req, res) {
     const proprietaire = await chercherParIdentifiant(identifiant);
 
     if (!proprietaire) {
-      return res.json({ existe: false, aDejaUnPin: false, aUnPasskey: false });
+      return res.json({ existe: false, aDejaUnPin: false });
     }
-
-    const passkey = await pool.query(
-      "SELECT 1 FROM credentials_webauthn WHERE proprietaire_id = $1 LIMIT 1",
-      [proprietaire.id]
-    );
 
     res.json({
       existe: true,
       aDejaUnPin: !!proprietaire.pin_hash,
-      aUnPasskey: passkey.rows.length > 0,
       prenom: proprietaire.prenom,
     });
   } catch (erreur) {
