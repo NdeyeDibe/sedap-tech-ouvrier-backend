@@ -1,8 +1,31 @@
 const pool = require("../db/pool");
 
+// Date de la saisie envoyée par l'appli (mode hors ligne) : une saisie
+// faite sans réseau part à la synchronisation, parfois le lendemain. Sans
+// cette date, elle s'enregistrerait au jour de l'envoi et fausserait le
+// suivi. On n'accepte que le format AAAA-MM-JJ, jamais une date future, et
+// jamais plus de JOURS_RATTRAPAGE jours en arrière : au-delà, c'est une
+// correction, qui passe par l'admin.
+const JOURS_RATTRAPAGE = 7;
+
+function dateSaisie(valeur) {
+  if (!valeur) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(valeur))) return null;
+
+  const jour = new Date(`${valeur}T12:00:00Z`);
+  if (Number.isNaN(jour.getTime())) return null;
+
+  const maintenant = Date.now();
+  const joursDecart = (maintenant - jour.getTime()) / 86400000;
+  if (joursDecart < -1 || joursDecart > JOURS_RATTRAPAGE) return null;
+
+  return valeur;
+}
+
 async function enregistrerMortalite(req, res) {
   const { bandeId } = req.params;
   const { mortalite, photos } = req.body;
+  const jour = dateSaisie(req.body.dateSaisie);
   const urlsPhotos = Array.isArray(photos) ? photos : [];
 
   if (mortalite === undefined || mortalite < 0) {
@@ -15,11 +38,11 @@ async function enregistrerMortalite(req, res) {
   try {
     const resultat = await pool.query(
       `INSERT INTO saisies_mortalite (bande_id, date_saisie, mortalite, photos)
-       VALUES ($1, CURRENT_DATE, $2, $3)
+       VALUES ($1, coalesce($4::date, CURRENT_DATE), $2, $3)
        ON CONFLICT (bande_id, date_saisie)
        DO UPDATE SET mortalite = EXCLUDED.mortalite, photos = EXCLUDED.photos
        RETURNING *`,
-      [bandeId, mortalite, urlsPhotos]
+      [bandeId, mortalite, urlsPhotos, jour]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
@@ -35,6 +58,7 @@ async function enregistrerSante(req, res) {
   // derrière une adresse temporaire du navigateur, et le propriétaire voyait
   // qu'un vocal existait sans jamais pouvoir l'écouter.
   const { etat, aVocal, vocalUrl, photos } = req.body;
+  const jour = dateSaisie(req.body.dateSaisie);
   const urlsPhotos = Array.isArray(photos) ? photos : [];
 
   if (!["bien", "anormal", "urgent"].includes(etat)) {
@@ -47,14 +71,14 @@ async function enregistrerSante(req, res) {
   try {
     const resultat = await pool.query(
       `INSERT INTO saisies_sante (bande_id, date_saisie, etat, a_vocal, vocal_url, photos)
-       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5)
+       VALUES ($1, coalesce($6::date, CURRENT_DATE), $2, $3, $4, $5)
        ON CONFLICT (bande_id, date_saisie)
        DO UPDATE SET etat = EXCLUDED.etat,
                      a_vocal = EXCLUDED.a_vocal,
                      vocal_url = EXCLUDED.vocal_url,
                      photos = EXCLUDED.photos
        RETURNING *`,
-      [bandeId, etat, aVocal || false, vocalUrl || null, urlsPhotos]
+      [bandeId, etat, aVocal || false, vocalUrl || null, urlsPhotos, jour]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
@@ -66,6 +90,7 @@ async function enregistrerSante(req, res) {
 async function enregistrerAlimentation(req, res) {
   const { bandeId } = req.params;
   const { lignes } = req.body;
+  const jour = dateSaisie(req.body.dateSaisie);
 
   if (!Array.isArray(lignes) || lignes.length === 0) {
     return res.status(400).json({ erreur: "Au moins une ligne d'aliment est requise." });
@@ -83,8 +108,9 @@ async function enregistrerAlimentation(req, res) {
     // modification doit être possible tant que la journée n'est pas
     // passée, sans fausser le stock).
     const ancienneSaisie = await client.query(
-      "SELECT type_aliment, sacs, kg_supplementaires FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE",
-      [bandeId]
+      `SELECT type_aliment, sacs, kg_supplementaires FROM saisies_alimentation
+        WHERE bande_id = $1 AND date_saisie = coalesce($2::date, CURRENT_DATE)`,
+      [bandeId, jour]
     );
     for (const ancienne of ancienneSaisie.rows) {
       const totalKgAncien = parseFloat(ancienne.sacs) * 50 + parseFloat(ancienne.kg_supplementaires);
@@ -97,17 +123,18 @@ async function enregistrerAlimentation(req, res) {
     }
 
     await client.query(
-      "DELETE FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = CURRENT_DATE",
-      [bandeId]
+      `DELETE FROM saisies_alimentation
+        WHERE bande_id = $1 AND date_saisie = coalesce($2::date, CURRENT_DATE)`,
+      [bandeId, jour]
     );
 
     const lignesInserees = [];
     for (const ligne of lignes) {
       const resultat = await client.query(
         `INSERT INTO saisies_alimentation (bande_id, date_saisie, type_aliment, sacs, kg_supplementaires)
-         VALUES ($1, CURRENT_DATE, $2, $3, $4)
+         VALUES ($1, coalesce($5::date, CURRENT_DATE), $2, $3, $4)
          RETURNING *`,
-        [bandeId, ligne.typeAliment, ligne.sacs || 0, ligne.kg || 0]
+        [bandeId, ligne.typeAliment, ligne.sacs || 0, ligne.kg || 0, jour]
       );
       lignesInserees.push(resultat.rows[0]);
 
@@ -140,6 +167,7 @@ async function enregistrerAlimentation(req, res) {
 // l'ouvrier repasse plusieurs fois par cet écran le même jour.
 async function marquerSansDonnee(req, res) {
   const { bandeId, etape } = req.params;
+  const jour = dateSaisie(req.body?.dateSaisie);
   const etapesAutorisees = ["alimentation"];
 
   if (!etapesAutorisees.includes(etape)) {
@@ -149,9 +177,9 @@ async function marquerSansDonnee(req, res) {
   try {
     await pool.query(
       `INSERT INTO saisies_sans_donnee (bande_id, date_saisie, etape)
-       VALUES ($1, CURRENT_DATE, $2)
+       VALUES ($1, coalesce($3::date, CURRENT_DATE), $2)
        ON CONFLICT (bande_id, date_saisie, etape) DO NOTHING`,
-      [bandeId, etape]
+      [bandeId, etape, jour]
     );
     res.status(201).json({ ok: true });
   } catch (erreur) {
