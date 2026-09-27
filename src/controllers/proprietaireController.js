@@ -134,6 +134,17 @@ const REQUETE_STOCK = `
    ORDER BY produit_id, variante_id
 `;
 
+// Ce que SEDAP a corrigé sur la bande, avec l'ancienne et la nouvelle
+// valeur. Le journal d'activité est en écriture seule (trigger
+// journal_activite_intouchable) : cette trace ne peut pas être effacée.
+const REQUETE_CORRECTIONS = `
+  SELECT cree_le, details
+    FROM journal_activite
+   WHERE bande_id = $1 AND action = 'bande_corrigee'
+   ORDER BY cree_le DESC
+   LIMIT 10
+`;
+
 // Un libellé de date lisible plutôt qu'une date brute : le propriétaire lit
 // « Hier » plus vite qu'une date, et l'écran l'affiche tel quel.
 function libelleJour(date) {
@@ -184,11 +195,16 @@ async function detailPoulailler(req, res) {
       });
     }
 
-    const [saisies, programme, stock, depenses] = await Promise.all([
+    const [saisies, programme, stock, depenses, corrections] = await Promise.all([
       pool.query(REQUETE_SAISIES, [ligne.bande_id, 10]),
       pool.query(REQUETE_PROGRAMME, [ligne.bande_id]),
       pool.query(REQUETE_STOCK, [ligne.poulailler_id]),
       pool.query(REQUETE_DEPENSES, [ligne.bande_id]),
+      // Corrections faites par SEDAP sur la bande EN COURS. Le bilan ne
+      // s'ouvre qu'une fois la bande clôturée : sans cette trace ici, le
+      // propriétaire verrait ses chiffres changer sans explication pendant
+      // toute la durée de la bande (retour Ndeye, sept. 2026).
+      pool.query(REQUETE_CORRECTIONS, [ligne.bande_id]),
     ]);
 
     res.json({
@@ -221,6 +237,16 @@ async function detailPoulailler(req, res) {
         sujetsSansPrix: Number(ligne.sujets_sans_prix),
         // Réceptions payées par le propriétaire dont le prix manque encore.
         receptionsSansPrix: Number(ligne.receptions_sans_prix),
+        // Vide dans l'immense majorité des cas.
+        corrections: corrections.rows.map((c) => ({
+          date: c.cree_le,
+          motif: c.details?.motif ?? null,
+          champs: Object.entries(c.details?.champs ?? {}).map(([colonne, v]) => ({
+            libelle: v.libelle ?? colonne,
+            avant: v.avant,
+            apres: v.apres,
+          })),
+        })),
       },
 
       saisies: saisies.rows.map((s) => ({
