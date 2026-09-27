@@ -25,6 +25,23 @@ function etatCompte(p) {
   return "actif";
 }
 
+const REQUETE_CLIENTS = `
+  SELECT p.id, p.prenom, p.nom, p.telephone, p.email, p.cree_le,
+         p.pin_hash, p.compte_verrouille,
+         f.id AS ferme_id, f.nom AS ferme_nom, f.localite,
+         (SELECT count(*) FROM poulaillers pl
+           WHERE pl.ferme_id = f.id AND pl.archive_le IS NULL) AS poulaillers,
+         (SELECT count(*) FROM bandes b
+            JOIN poulaillers pl ON pl.id = b.poulailler_id
+           WHERE pl.ferme_id = f.id AND b.statut <> 'terminee') AS bandes_actives,
+         (SELECT count(*) FROM bandes b
+            JOIN poulaillers pl ON pl.id = b.poulailler_id
+           WHERE pl.ferme_id = f.id AND b.statut = 'terminee') AS bandes_terminees
+    FROM proprietaires p
+    LEFT JOIN fermes f ON f.proprietaire_id = p.id
+   ORDER BY p.prenom, p.nom
+`;
+
 // GET /api/admin/clients?recherche=…&compte=…
 //
 // La recherche porte sur le nom, le téléphone et l'e-mail : c'est par l'un
@@ -34,76 +51,72 @@ async function listeClients(req, res) {
   const compte = String(req.query.compte ?? "").trim();
 
   try {
-    const { rows } = await pool.query(
-      `SELECT p.id, p.prenom, p.nom, p.telephone, p.email, p.cree_le,
-              p.pin_hash, p.compte_verrouille,
-              f.id AS ferme_id, f.nom AS ferme_nom, f.localite,
-              (SELECT count(*) FROM poulaillers pl
-                WHERE pl.ferme_id = f.id AND pl.archive_le IS NULL) AS poulaillers,
-              (SELECT count(*) FROM bandes b
-                 JOIN poulaillers pl ON pl.id = b.poulailler_id
-                WHERE pl.ferme_id = f.id AND b.statut <> 'terminee') AS bandes_actives,
-              (SELECT count(*) FROM bandes b
-                 JOIN poulaillers pl ON pl.id = b.poulailler_id
-                WHERE pl.ferme_id = f.id AND b.statut = 'terminee') AS bandes_terminees
-         FROM proprietaires p
-         LEFT JOIN fermes f ON f.proprietaire_id = p.id
-        ORDER BY p.prenom, p.nom`
-    );
+    const { rows } = await pool.query(REQUETE_CLIENTS);
 
-    // Filtres appliqués ici plutôt qu'en SQL : la liste des clients de
-    // SEDAP se compte en dizaines, et le code reste lisible.
-    const sansAccents = (t) =>
-      String(t ?? "")
-        .normalize("NFD")
-        .replace(/[̀-ͯ]/g, "")
-        .toLowerCase();
-    const chiffres = (t) => String(t ?? "").replace(/\D/g, "");
+    const tous = rows.map((p) => ({
+      id: p.id,
+      prenom: p.prenom,
+      nom: p.nom,
+      telephone: p.telephone,
+      email: p.email,
+      clientDepuis: p.cree_le,
+      compte: etatCompte(p),
+      ferme: p.ferme_id
+        ? {
+            id: p.ferme_id,
+            nom: p.ferme_nom,
+            localite: p.localite,
+            poulaillers: Number(p.poulaillers),
+          }
+        : null,
+      bandes: {
+        actives: Number(p.bandes_actives ?? 0),
+        terminees: Number(p.bandes_terminees ?? 0),
+      },
+    }));
 
-    const clients = rows
-      .map((p) => ({
-        id: p.id,
-        prenom: p.prenom,
-        nom: p.nom,
-        telephone: p.telephone,
-        email: p.email,
-        clientDepuis: p.cree_le,
-        compte: etatCompte(p),
-        ferme: p.ferme_id
-          ? {
-              id: p.ferme_id,
-              nom: p.ferme_nom,
-              localite: p.localite,
-              poulaillers: Number(p.poulaillers),
-            }
-          : null,
-        bandes: {
-          actives: Number(p.bandes_actives ?? 0),
-          terminees: Number(p.bandes_terminees ?? 0),
-        },
-      }))
-      .filter((c) => {
-        if (compte && c.compte !== compte) return false;
-        if (!recherche) return true;
-        const aiguille = sansAccents(recherche);
-        const nombres = chiffres(recherche);
-        return (
-          sansAccents(`${c.prenom} ${c.nom}`).includes(aiguille) ||
-          sansAccents(c.email).includes(aiguille) ||
-          sansAccents(c.ferme?.nom).includes(aiguille) ||
-          (nombres.length >= 3 && chiffres(c.telephone).includes(nombres))
-        );
-      });
+    // La recherche s'applique d'abord. Les compteurs des pastilles portent
+    // sur elle, pas sur la base entière : « Actifs · 9 » doit dire combien
+    // de lignes s'afficheront si on clique, sinon le chiffre ment.
+    const trouves = tous.filter((c) => correspond(c, recherche));
+
+    const compteurs = { tous: trouves.length, actif: 0, en_attente: 0, verrouille: 0 };
+    for (const c of trouves) compteurs[c.compte] = (compteurs[c.compte] ?? 0) + 1;
 
     res.json({
-      clients,
-      // Pour les compteurs du filtre, calculés sur la liste complète.
-      total: rows.length,
+      clients: compte ? trouves.filter((c) => c.compte === compte) : trouves,
+      compteurs,
+      // Le total sans aucun filtre, pour le sous-titre de l'écran.
+      total: tous.length,
     });
   } catch (erreur) {
     console.error("Erreur liste des clients :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
   }
+}
+
+// Le filtrage se fait ici plutôt qu'en SQL : la clientèle de SEDAP se
+// compte en dizaines, et le code reste lisible.
+const sansAccents = (t) =>
+  String(t ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const chiffresSeuls = (t) => String(t ?? "").replace(/\D/g, "");
+
+// Nom, téléphone, e-mail ou ferme : au téléphone, SEDAP retrouve quelqu'un
+// par l'un des quatre, et rarement par celui auquel on aurait pensé.
+function correspond(c, recherche) {
+  if (!recherche) return true;
+  const aiguille = sansAccents(recherche);
+  const nombres = chiffresSeuls(recherche);
+  return (
+    sansAccents(`${c.prenom} ${c.nom}`).includes(aiguille) ||
+    sansAccents(c.email).includes(aiguille) ||
+    sansAccents(c.ferme?.nom).includes(aiguille) ||
+    (nombres.length >= 3 && chiffresSeuls(c.telephone).includes(nombres))
+  );
 }
 
 // Un numéro international : on garde les chiffres et on impose un « + ».
