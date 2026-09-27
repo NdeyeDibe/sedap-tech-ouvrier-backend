@@ -14,6 +14,7 @@ const proprietaireAuthRoutes = require("./routes/proprietaireAuthRoutes");
 const proprietaireRoutes = require("./routes/proprietaireRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const { demarrerSurveillance } = require("./jobs/surveillance");
+const { migrer } = require("./db/migrate");
 
 const app = express();
 
@@ -63,20 +64,47 @@ const PORT = process.env.PORT || 4000;
 const CHEMIN_CERT = require("path").join(__dirname, "..", "certs", "cert.pem");
 const CHEMIN_CLE = require("path").join(__dirname, "..", "certs", "key.pem");
 
-if (fs.existsSync(CHEMIN_CERT) && fs.existsSync(CHEMIN_CLE)) {
-  const options = {
-    cert: fs.readFileSync(CHEMIN_CERT),
-    key: fs.readFileSync(CHEMIN_CLE),
-  };
-  https.createServer(options, app).listen(PORT, () => {
-    console.log(`✅ Serveur SEDAP'Tech backend démarré (HTTPS) sur https://localhost:${PORT}`);
-  });
-} else {
-  app.listen(PORT, () => {
-    console.log(`✅ Serveur SEDAP'Tech backend démarré sur http://localhost:${PORT}`);
-  });
+function ecouter() {
+  if (fs.existsSync(CHEMIN_CERT) && fs.existsSync(CHEMIN_CLE)) {
+    const options = {
+      cert: fs.readFileSync(CHEMIN_CERT),
+      key: fs.readFileSync(CHEMIN_CLE),
+    };
+    https.createServer(options, app).listen(PORT, () => {
+      console.log(`✅ Serveur SEDAP'Tech backend démarré (HTTPS) sur https://localhost:${PORT}`);
+    });
+  } else {
+    app.listen(PORT, () => {
+      console.log(`✅ Serveur SEDAP'Tech backend démarré sur http://localhost:${PORT}`);
+    });
+  }
+
+  // Tâches automatiques : notifications des nouvelles alertes (toutes les
+  // 15 min) et suppression des vieux vocaux (une fois par jour).
+  demarrerSurveillance();
 }
 
-// Tâches automatiques : notifications des nouvelles alertes (toutes les
-// 15 min) et suppression des vieux vocaux (une fois par jour).
-demarrerSurveillance();
+// Les migrations passent AVANT d'ouvrir le port.
+//
+// Jusqu'ici il fallait penser à lancer `npm run migrate` à la main après
+// chaque déploiement. Oublié, le serveur démarrait quand même et répondait
+// « Erreur serveur » sur les écrans qui touchaient aux nouvelles colonnes —
+// sans que rien ne dise pourquoi. Deux migrations étaient ainsi restées en
+// attente plusieurs jours (sept. 2026).
+//
+// Si une migration échoue, on refuse de démarrer : un serveur qui répond
+// avec un schéma incomplet est plus difficile à diagnostiquer qu'un serveur
+// qui ne répond pas du tout, et l'erreur exacte est dans les logs.
+async function demarrer() {
+  try {
+    await migrer({ detaille: false });
+  } catch (erreur) {
+    console.error("❌ Migration impossible, le serveur ne démarre pas :");
+    console.error(`   ${erreur.message}`);
+    process.exit(1);
+  }
+
+  ecouter();
+}
+
+demarrer();
