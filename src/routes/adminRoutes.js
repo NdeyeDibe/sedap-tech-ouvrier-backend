@@ -18,6 +18,7 @@ const {
   corrigerSaisie,
   detailBandeAdmin,
 } = require("../controllers/adminBandesController");
+const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -53,6 +54,11 @@ router.get("/bandes/:id", detailBandeAdmin);
 router.patch("/bandes/:id", corrigerBande);
 // Rattrape une faute de frappe sur une journée déjà verrouillée.
 router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
+
+// ---------------------------------------------------------------- ventes
+// Une vente fausse déforme le bilan : SEDAP peut la corriger ou la retirer.
+router.patch("/ventes/:id", corrigerVente);
+router.delete("/ventes/:id", supprimerVente);
 
 // ------------------------------------------------------ comptes bloqués
 // Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.

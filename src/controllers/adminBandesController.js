@@ -332,11 +332,25 @@ async function detailBandeAdmin(req, res) {
 
     // Le reste du contenu vient des mêmes requêtes que l'écran du
     // propriétaire — c'est ce que demande le cahier admin (section IX).
-    const [saisies, programme, depenses, stock, corrections] = await Promise.all([
+    const [saisies, programme, depenses, stock, ventes, corrections] = await Promise.all([
       pool.query(REQUETE_SAISIES, [bandeId, JOURS_HISTORIQUE]),
       pool.query(REQUETE_PROGRAMME, [bandeId]),
       pool.query(REQUETE_DEPENSES, [bandeId]),
       pool.query(REQUETE_STOCK, [b.poulailler_id]),
+      // Les deux listes du cahier admin : ventes à la ferme saisies par
+      // l'ouvrier, et ramassages du propriétaire avec leur détail.
+      pool.query(
+        `SELECT v.id, v.type_vente, v.nom_client, v.telephone_client,
+                v.quantite, v.prix_unitaire, v.date_vente, v.auteur_type,
+                coalesce((SELECT sum(d.quantite) FROM ventes_details d WHERE d.vente_id = v.id), 0)
+                  AS detaille,
+                coalesce((SELECT count(*) FROM ventes_details d WHERE d.vente_id = v.id), 0)
+                  AS lignes_detail
+           FROM ventes v
+          WHERE v.bande_id = $1
+          ORDER BY v.date_vente DESC`,
+        [bandeId]
+      ),
       // Le journal nomme qui a corrigé : une trace anonyme ne sert à rien
       // quand il faut rappeler la personne pour comprendre.
       pool.query(
@@ -434,6 +448,22 @@ async function detailBandeAdmin(req, res) {
         })),
         total: totalDepenses,
       },
+
+      ventes: ventes.rows.map((v) => ({
+        id: v.id,
+        type: v.type_vente,
+        client: v.nom_client,
+        telephone: v.telephone_client,
+        quantite: Number(v.quantite),
+        prixUnitaire: v.prix_unitaire === null ? null : Number(v.prix_unitaire),
+        montant: v.prix_unitaire === null ? null : Number(v.quantite) * Number(v.prix_unitaire),
+        date: v.date_vente,
+        auteur: v.auteur_type,
+        // Un ramassage se chiffre ligne par ligne : tant que le détail est
+        // incomplet, ces sujets ne comptent pas dans les recettes.
+        detaille: Number(v.detaille),
+        lignesDetail: Number(v.lignes_detail),
+      })),
 
       stock: stock.rows.map((s) => ({
         produitId: s.produit_id,
