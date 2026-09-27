@@ -20,6 +20,7 @@ const {
 } = require("../controllers/adminBandesController");
 const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
 const { corrigerReception } = require("../controllers/adminReceptionsController");
+const { listeClients, creerClient } = require("../controllers/adminClientsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -41,6 +42,11 @@ router.patch("/auth/mot-de-passe", modifierMotDePasse);
 
 // ------------------------------------------------------- tableau de bord
 router.get("/tableau-de-bord", tableauDeBord);
+
+// --------------------------------------------------------------- clients
+// SEDAP crée le propriétaire, sa ferme et ses poulaillers en une fois.
+router.get("/clients", listeClients);
+router.post("/clients", creerClient);
 
 // ---------------------------------------------------------------- fermes
 router.get("/fermes/:id", detailFerme);
