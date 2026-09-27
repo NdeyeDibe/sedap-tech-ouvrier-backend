@@ -19,6 +19,7 @@ const {
   detailBandeAdmin,
 } = require("../controllers/adminBandesController");
 const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
+const { corrigerReception } = require("../controllers/adminReceptionsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -59,6 +60,10 @@ router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
 // Une vente fausse déforme le bilan : SEDAP peut la corriger ou la retirer.
 router.patch("/ventes/:id", corrigerVente);
 router.delete("/ventes/:id", supprimerVente);
+
+// ------------------------------------------------------------ réceptions
+// Corriger une quantité reçue ajuste aussi le stock disponible.
+router.patch("/receptions/:id", corrigerReception);
 
 // ------------------------------------------------------ comptes bloqués
 // Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.

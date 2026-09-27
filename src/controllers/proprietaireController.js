@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { correctionLisible, ACTIONS_VISIBLES } = require("../utils/corrections");
 const {
   chargerFerme,
   alertesDeLaFerme,
@@ -138,9 +139,10 @@ const REQUETE_STOCK = `
 // valeur. Le journal d'activité est en écriture seule (trigger
 // journal_activite_intouchable) : cette trace ne peut pas être effacée.
 const REQUETE_CORRECTIONS = `
-  SELECT cree_le, details
+  SELECT cree_le, action, details
     FROM journal_activite
-   WHERE bande_id = $1 AND action = 'bande_corrigee'
+   WHERE bande_id = $1
+     AND action = ANY($2)
    ORDER BY cree_le DESC
    LIMIT 10
 `;
@@ -204,7 +206,7 @@ async function detailPoulailler(req, res) {
       // s'ouvre qu'une fois la bande clôturée : sans cette trace ici, le
       // propriétaire verrait ses chiffres changer sans explication pendant
       // toute la durée de la bande (retour Ndeye, sept. 2026).
-      pool.query(REQUETE_CORRECTIONS, [ligne.bande_id]),
+      pool.query(REQUETE_CORRECTIONS, [ligne.bande_id, ACTIONS_VISIBLES]),
     ]);
 
     res.json({
@@ -238,15 +240,7 @@ async function detailPoulailler(req, res) {
         // Réceptions payées par le propriétaire dont le prix manque encore.
         receptionsSansPrix: Number(ligne.receptions_sans_prix),
         // Vide dans l'immense majorité des cas.
-        corrections: corrections.rows.map((c) => ({
-          date: c.cree_le,
-          motif: c.details?.motif ?? null,
-          champs: Object.entries(c.details?.champs ?? {}).map(([colonne, v]) => ({
-            libelle: v.libelle ?? colonne,
-            avant: v.avant,
-            apres: v.apres,
-          })),
-        })),
+        corrections: corrections.rows.map(correctionLisible),
       },
 
       saisies: saisies.rows.map((s) => ({

@@ -16,6 +16,15 @@ const JOURS_HISTORIQUE = 60;
 // Jour à partir duquel la vente s'ouvre (même seuil que l'appli ouvrier).
 const JOUR_VENTE = 25;
 
+// Sur quoi porte une entrée du journal, pour l'écran.
+const TYPE_CORRECTION = {
+  bande_corrigee: "bande",
+  saisie_corrigee: "saisie",
+  vente_corrigee: "vente",
+  vente_supprimee_admin: "vente_supprimee",
+  reception_corrigee: "reception",
+};
+
 // Une date PostgreSQL en AAAA-MM-JJ, sans décalage de fuseau.
 function jourISO(valeur) {
   const d = valeur instanceof Date ? valeur : new Date(valeur);
@@ -215,7 +224,17 @@ async function corrigerBande(req, res) {
       return res.status(409).json({ erreur: probleme });
     }
 
-    const diff = differences(bande, apres, CHAMPS);
+    // Même précaution que pour les ventes : le prix revient en texte de
+    // PostgreSQL et paraîtrait modifié à chaque correction.
+    const diff = differences(
+      {
+        ...bande,
+        prix_unitaire_poussin:
+          bande.prix_unitaire_poussin === null ? null : Number(bande.prix_unitaire_poussin),
+      },
+      apres,
+      CHAMPS
+    );
     if (Object.keys(diff).length === 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ erreur: "Aucune modification : les valeurs sont identiques." });
@@ -332,7 +351,7 @@ async function detailBandeAdmin(req, res) {
 
     // Le reste du contenu vient des mêmes requêtes que l'écran du
     // propriétaire — c'est ce que demande le cahier admin (section IX).
-    const [saisies, programme, depenses, stock, ventes, corrections] = await Promise.all([
+    const [saisies, programme, depenses, stock, ventes, receptions, corrections] = await Promise.all([
       pool.query(REQUETE_SAISIES, [bandeId, JOURS_HISTORIQUE]),
       pool.query(REQUETE_PROGRAMME, [bandeId]),
       pool.query(REQUETE_DEPENSES, [bandeId]),
@@ -351,6 +370,16 @@ async function detailBandeAdmin(req, res) {
           ORDER BY v.date_vente DESC`,
         [bandeId]
       ),
+      // Les réceptions de stock rattachées à cette bande (la vue les relie
+      // par la date). Les poussins ont leur propre bloc, on les écarte.
+      pool.query(
+        `SELECT id, poste, nom, unite, quantite, prix_unitaire, provenance,
+                date_reception, source
+           FROM receptions_ferme
+          WHERE bande_id = $1 AND origine = 'produit'
+          ORDER BY date_reception DESC`,
+        [bandeId]
+      ),
       // Le journal nomme qui a corrigé : une trace anonyme ne sert à rien
       // quand il faut rappeler la personne pour comprendre.
       pool.query(
@@ -359,7 +388,9 @@ async function detailBandeAdmin(req, res) {
            FROM journal_activite j
            LEFT JOIN admins a ON a.id = j.acteur_id AND j.acteur_type = 'admin'
           WHERE j.bande_id = $1
-            AND j.action IN ('bande_corrigee', 'saisie_corrigee')
+            AND j.action IN ('bande_corrigee', 'saisie_corrigee',
+                             'vente_corrigee', 'vente_supprimee_admin',
+                             'reception_corrigee')
           ORDER BY j.cree_le DESC
           LIMIT 50`,
         [bandeId]
@@ -465,6 +496,21 @@ async function detailBandeAdmin(req, res) {
         lignesDetail: Number(v.lignes_detail),
       })),
 
+      receptions: receptions.rows.map((r) => ({
+        id: r.id,
+        poste: r.poste,
+        nom: r.nom,
+        unite: r.unite,
+        quantite: Number(r.quantite),
+        prixUnitaire: r.prix_unitaire === null ? null : Number(r.prix_unitaire),
+        montant: r.prix_unitaire === null ? null : Number(r.quantite) * Number(r.prix_unitaire),
+        provenance: r.provenance,
+        date: r.date_reception,
+        // Qui a payé : l'ouvrier saisit son prix, le propriétaire chiffre
+        // la sienne plus tard depuis son écran Réceptions.
+        payePar: r.source,
+      })),
+
       stock: stock.rows.map((s) => ({
         produitId: s.produit_id,
         varianteId: s.variante_id,
@@ -476,7 +522,7 @@ async function detailBandeAdmin(req, res) {
       corrections: corrections.rows.map((c) => ({
         id: c.id,
         le: c.cree_le,
-        type: c.action === "saisie_corrigee" ? "saisie" : "bande",
+        type: TYPE_CORRECTION[c.action] ?? "bande",
         // Le jour concerné, pour les corrections de saisie.
         date: c.details?.date ?? null,
         par: [c.admin_prenom, c.admin_nom].filter(Boolean).join(" ") || "SEDAP",

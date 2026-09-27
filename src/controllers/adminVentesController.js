@@ -168,8 +168,12 @@ async function corrigerVente(req, res) {
     }
 
     // Fusion : on ne touche qu'aux champs réellement envoyés.
+    // Défauts pris sur la ligne normalisée (voir normaliser) : sinon le
+    // prix, rendu en texte par PostgreSQL, paraîtrait modifié dès qu'on
+    // corrige autre chose.
+    const avant = normaliser(vente);
     const apres = {};
-    for (const c of CHAMPS) apres[c] = vente[c];
+    for (const c of CHAMPS) apres[c] = avant[c];
     for (const [cle, colonne] of Object.entries(DEPUIS_CORPS)) {
       if (!(cle in req.body)) continue;
       const brut = req.body[cle];
@@ -191,7 +195,11 @@ async function corrigerVente(req, res) {
       return res.status(409).json({ erreur: probleme });
     }
 
-    const diff = differences(vente, apres, CHAMPS);
+    // PostgreSQL rend les NUMERIC en texte (« 3200.00 ») : comparés tels
+    // quels à un nombre (3200), ils passent pour un changement. On aligne
+    // avant de comparer, sinon le journal — et le propriétaire — voient
+    // des corrections qui n'en sont pas.
+    const diff = differences(avant, apres, CHAMPS);
     if (Object.keys(diff).length === 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ erreur: "Aucune modification : les valeurs sont identiques." });
@@ -245,6 +253,14 @@ async function corrigerVente(req, res) {
   } finally {
     client.release();
   }
+}
+
+// Les montants en nombre, pour comparer ce qui est comparable.
+function normaliser(ligne) {
+  return {
+    ...ligne,
+    prix_unitaire: ligne.prix_unitaire === null ? null : Number(ligne.prix_unitaire),
+  };
 }
 
 function verifier(apres, vente) {

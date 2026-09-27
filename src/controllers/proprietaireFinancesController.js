@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { correctionLisible, ACTIONS_VISIBLES } = require("../utils/corrections");
 const { resumeAnnuel, totalSalaires, fraisDuMois, totalFrais } =
   require("../utils/finances");
 
@@ -153,12 +154,13 @@ async function detailBilan(req, res) {
       // silencieuse qu'il découvre plus tard, c'est la confiance dans
       // l'appli qui tombe (décision Ndeye, sept. 2026).
       pool.query(
-        `SELECT cree_le, details
+        `SELECT cree_le, action, details
            FROM journal_activite
-          WHERE bande_id = $1 AND action = 'bande_corrigee'
+          WHERE bande_id = $1
+            AND action = ANY($2)
           ORDER BY cree_le DESC
           LIMIT 10`,
-        [bandeId]
+        [bandeId, ACTIONS_VISIBLES]
       ),
     ]);
 
@@ -221,15 +223,7 @@ async function detailBilan(req, res) {
 
       // Ce que SEDAP a corrigé sur cette bande, avec l'ancienne et la
       // nouvelle valeur. Vide dans l'immense majorité des cas.
-      corrections: corrections.rows.map((c) => ({
-        date: c.cree_le,
-        motif: c.details?.motif ?? null,
-        champs: Object.entries(c.details?.champs ?? {}).map(([colonne, v]) => ({
-          libelle: v.libelle ?? colonne,
-          avant: v.avant,
-          apres: v.apres,
-        })),
-      })),
+      corrections: corrections.rows.map(correctionLisible),
     });
   } catch (erreur) {
     console.error("Erreur détail du bilan :", erreur);
