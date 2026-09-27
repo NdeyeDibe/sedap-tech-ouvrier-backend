@@ -123,7 +123,7 @@ async function detailBilan(req, res) {
 
     const bilan = rows[0];
 
-    const [depenses, ventes] = await Promise.all([
+    const [depenses, ventes, corrections] = await Promise.all([
       pool.query(
         // Les poussins ont leur propre ligne en tête du bilan (reception).
         `SELECT poste, quantite, cout FROM depenses_bandes
@@ -146,6 +146,18 @@ async function detailBilan(req, res) {
            JOIN ventes v ON v.id = d.vente_id
           WHERE v.bande_id = $1
           ORDER BY date DESC`,
+        [bandeId]
+      ),
+      // Corrections faites par SEDAP sur cette bande. Le propriétaire doit
+      // les voir : ce sont ses chiffres et son argent. Une correction
+      // silencieuse qu'il découvre plus tard, c'est la confiance dans
+      // l'appli qui tombe (décision Ndeye, sept. 2026).
+      pool.query(
+        `SELECT cree_le, details
+           FROM journal_activite
+          WHERE bande_id = $1 AND action = 'bande_corrigee'
+          ORDER BY cree_le DESC
+          LIMIT 10`,
         [bandeId]
       ),
     ]);
@@ -205,6 +217,18 @@ async function detailBilan(req, res) {
         date: v.date,
         auteur: v.auteur_type,
         ramasseur: v.ramasseur,
+      })),
+
+      // Ce que SEDAP a corrigé sur cette bande, avec l'ancienne et la
+      // nouvelle valeur. Vide dans l'immense majorité des cas.
+      corrections: corrections.rows.map((c) => ({
+        date: c.cree_le,
+        motif: c.details?.motif ?? null,
+        champs: Object.entries(c.details?.champs ?? {}).map(([colonne, v]) => ({
+          libelle: v.libelle ?? colonne,
+          avant: v.avant,
+          apres: v.apres,
+        })),
       })),
     });
   } catch (erreur) {
