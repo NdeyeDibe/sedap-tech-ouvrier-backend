@@ -1,5 +1,28 @@
 const pool = require("../db/pool");
 const { parAdmin, differences } = require("../services/journal");
+const {
+  REQUETE_SAISIES,
+  REQUETE_PROGRAMME,
+  REQUETE_DEPENSES,
+  REQUETE_STOCK,
+  LIBELLE_POSTE,
+} = require("./proprietaireController");
+
+// Combien de jours d'historique l'écran reçoit d'un coup. La maquette en
+// montre six et propose « Voir les 35 jours » : une bande dure rarement
+// plus de 45 jours, autant tout envoyer et laisser l'écran replier.
+const JOURS_HISTORIQUE = 60;
+
+// Jour à partir duquel la vente s'ouvre (même seuil que l'appli ouvrier).
+const JOUR_VENTE = 25;
+
+// Une date PostgreSQL en AAAA-MM-JJ, sans décalage de fuseau.
+function jourISO(valeur) {
+  const d = valeur instanceof Date ? valeur : new Date(valeur);
+  if (Number.isNaN(d.getTime())) return "";
+  const deux = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${deux(d.getMonth() + 1)}-${deux(d.getDate())}`;
+}
 
 // Correction d'une bande par SEDAP — cahier admin, section « corrections ».
 //
@@ -281,32 +304,63 @@ async function detailBandeAdmin(req, res) {
   }
 
   try {
-    const [{ rows: bandes }, { rows: corrections }] = await Promise.all([
+    const { rows: bandes } = await pool.query(
+      `SELECT b.id, b.numero, b.statut, b.date_debut, b.date_fin,
+              (now()::date - b.date_debut::date)::int + 1 AS age_jours,
+              ${CHAMPS.join(", ")},
+              pl.id AS poulailler_id, pl.nom AS poulailler_nom,
+              f.id AS ferme_id, f.nom AS ferme_nom,
+              o.prenom AS ouvrier_prenom, o.nom AS ouvrier_nom,
+              o.telephone AS ouvrier_telephone,
+              e.effectif_initial, e.morts, e.vendus, e.restant, e.taux_mortalite,
+              coalesce((SELECT sm.mortalite FROM saisies_mortalite sm
+                         WHERE sm.bande_id = b.id AND sm.date_saisie = CURRENT_DATE), 0)
+                AS morts_aujourdhui
+         FROM bandes b
+         JOIN poulaillers pl ON pl.id = b.poulailler_id
+         LEFT JOIN fermes f ON f.id = pl.ferme_id
+         LEFT JOIN personnel pe
+           ON pe.poulailler_id = pl.id AND pe.role = 'responsable' AND pe.fin_fonction IS NULL
+         LEFT JOIN ouvriers o ON o.id = pe.ouvrier_id
+         LEFT JOIN etat_bandes e ON e.bande_id = b.id
+        WHERE b.id = $1`,
+      [bandeId]
+    );
+
+    const b = bandes[0];
+    if (!b) return res.status(404).json({ erreur: "Bande introuvable." });
+
+    // Le reste du contenu vient des mêmes requêtes que l'écran du
+    // propriétaire — c'est ce que demande le cahier admin (section IX).
+    const [saisies, programme, depenses, stock, corrections] = await Promise.all([
+      pool.query(REQUETE_SAISIES, [bandeId, JOURS_HISTORIQUE]),
+      pool.query(REQUETE_PROGRAMME, [bandeId]),
+      pool.query(REQUETE_DEPENSES, [bandeId]),
+      pool.query(REQUETE_STOCK, [b.poulailler_id]),
+      // Le journal nomme qui a corrigé : une trace anonyme ne sert à rien
+      // quand il faut rappeler la personne pour comprendre.
       pool.query(
-        `SELECT b.id, b.numero, b.statut, b.date_debut, b.date_fin,
-                ${CHAMPS.join(", ")},
-                pl.id AS poulailler_id, pl.nom AS poulailler_nom,
-                f.id AS ferme_id, f.nom AS ferme_nom,
-                e.effectif_initial, e.morts, e.vendus, e.restant, e.taux_mortalite
-           FROM bandes b
-           JOIN poulaillers pl ON pl.id = b.poulailler_id
-           LEFT JOIN fermes f ON f.id = pl.ferme_id
-           LEFT JOIN etat_bandes e ON e.bande_id = b.id
-          WHERE b.id = $1`,
-        [bandeId]
-      ),
-      pool.query(
-        `SELECT id, cree_le, details
-           FROM journal_activite
-          WHERE bande_id = $1 AND action = 'bande_corrigee'
-          ORDER BY cree_le DESC
-          LIMIT 20`,
+        `SELECT j.id, j.cree_le, j.details, j.action,
+                a.prenom AS admin_prenom, a.nom AS admin_nom
+           FROM journal_activite j
+           LEFT JOIN admins a ON a.id = j.acteur_id AND j.acteur_type = 'admin'
+          WHERE j.bande_id = $1
+            AND j.action IN ('bande_corrigee', 'saisie_corrigee')
+          ORDER BY j.cree_le DESC
+          LIMIT 50`,
         [bandeId]
       ),
     ]);
 
-    const b = bandes[0];
-    if (!b) return res.status(404).json({ erreur: "Bande introuvable." });
+    // Les jours déjà corrigés, pour l'icône crayon de l'historique.
+    const joursCorriges = new Set(
+      corrections.rows
+        .filter((c) => c.action === "saisie_corrigee" && c.details?.date)
+        .map((c) => String(c.details.date).slice(0, 10))
+    );
+
+    const aujourdhui = new Date().toISOString().slice(0, 10);
+    const totalDepenses = depenses.rows.reduce((t, d) => t + Number(d.cout), 0);
 
     res.json({
       bande: {
@@ -315,6 +369,9 @@ async function detailBandeAdmin(req, res) {
         statut: b.statut,
         dateDebut: b.date_debut,
         dateFin: b.date_fin,
+        ageJours: Number(b.age_jours),
+        // Le bouton « Démarrer la vente » s'ouvre à J25 côté ouvrier.
+        ventePossibleDepuis: JOUR_VENTE,
         poussinsCommandes: b.poussins_commandes,
         poussinsRecus: b.poussins_recus,
         mortsALArrivee: b.morts_a_larrivee,
@@ -326,18 +383,80 @@ async function detailBandeAdmin(req, res) {
       },
       poulailler: { id: b.poulailler_id, nom: b.poulailler_nom },
       ferme: { id: b.ferme_id, nom: b.ferme_nom },
+      responsable: b.ouvrier_prenom
+        ? { prenom: b.ouvrier_prenom, nom: b.ouvrier_nom, telephone: b.ouvrier_telephone }
+        : null,
+
       etat: {
         effectifInitial: b.effectif_initial,
         morts: b.morts,
+        mortsAujourdhui: Number(b.morts_aujourdhui),
         vendus: b.vendus,
         restant: b.restant,
         tauxMortalite: b.taux_mortalite == null ? 0 : Number(b.taux_mortalite),
       },
-      corrections: corrections.map((c) => ({
+
+      // Un jour se verrouille au changement de jour : passé cette limite,
+      // l'ouvrier ne peut plus y toucher, seul SEDAP le peut.
+      saisies: saisies.rows.map((s) => {
+        const jour = jourISO(s.date_saisie);
+        return {
+          date: s.date_saisie,
+          morts: Number(s.mortalite),
+          sacs: Number(s.sacs),
+          kg: Number(s.kg),
+          etat: s.etat ?? "bien",
+          aVocal: s.a_vocal ?? false,
+          photos: Number(s.nb_photos),
+          verrouillee: jour !== aujourdhui,
+          corrigee: joursCorriges.has(jour),
+        };
+      }),
+
+      programme: programme.rows.map((p) => ({
+        nom: p.nom,
+        type: p.type,
+        jourDebut: p.jour_debut,
+        jourFin: p.jour_fin,
+        datePrevue: p.date_prevue,
+        dateLimite: p.date_limite,
+        confirme: p.confirme,
+        dateFaite: p.date_faite,
+        enRetard: p.en_retard,
+      })),
+
+      depenses: {
+        lignes: depenses.rows.map((d) => ({
+          poste: d.poste,
+          libelle: LIBELLE_POSTE[d.poste] ?? d.poste,
+          quantite: Number(d.quantite),
+          cout: Number(d.cout),
+        })),
+        total: totalDepenses,
+      },
+
+      stock: stock.rows.map((s) => ({
+        produitId: s.produit_id,
+        varianteId: s.variante_id,
+        nom: s.nom,
+        unite: s.unite,
+        quantite: Number(s.quantite),
+      })),
+
+      corrections: corrections.rows.map((c) => ({
         id: c.id,
         le: c.cree_le,
+        type: c.action === "saisie_corrigee" ? "saisie" : "bande",
+        // Le jour concerné, pour les corrections de saisie.
+        date: c.details?.date ?? null,
+        par: [c.admin_prenom, c.admin_nom].filter(Boolean).join(" ") || "SEDAP",
         motif: c.details?.motif ?? null,
-        champs: c.details?.champs ?? {},
+        champs: Object.entries(c.details?.champs ?? {}).map(([colonne, v]) => ({
+          cle: colonne,
+          libelle: v.libelle ?? colonne,
+          avant: v.avant,
+          apres: v.apres,
+        })),
       })),
     });
   } catch (erreur) {
@@ -346,4 +465,146 @@ async function detailBandeAdmin(req, res) {
   }
 }
 
-module.exports = { corrigerBande, detailBandeAdmin, LIBELLES_BANDE: LIBELLES };
+// ------------------------------------------- correction d'une saisie
+
+// PATCH /api/admin/bandes/:id/saisies/:date
+//
+// Une journée se verrouille au changement de jour : l'ouvrier ne peut plus
+// y revenir, et c'était jusqu'ici définitif. Une faute de frappe (30 morts
+// au lieu de 3) restait donc dans les chiffres pour toujours.
+//
+// Ce qui se corrige : la mortalité du jour, l'état de santé, et les
+// quantités d'aliment. Les photos et le vocal ne se corrigent pas — ce sont
+// des preuves, pas des valeurs.
+async function corrigerSaisie(req, res) {
+  const bandeId = Number(req.params.id);
+  const jour = String(req.params.date ?? "");
+
+  if (!Number.isInteger(bandeId)) {
+    return res.status(400).json({ erreur: "Identifiant de bande invalide." });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(jour)) {
+    return res.status(400).json({ erreur: "Date attendue au format AAAA-MM-JJ." });
+  }
+
+  const motif = texte(req.body.motif);
+  if (!motif) {
+    return res.status(400).json({ erreur: "Indiquez la raison de la correction." });
+  }
+
+  const mortalite = "mortalite" in req.body ? entier(req.body.mortalite) : undefined;
+  const etat = "etat" in req.body ? texte(req.body.etat) : undefined;
+
+  if (mortalite === undefined && etat === undefined) {
+    return res.status(400).json({ erreur: "Rien à corriger." });
+  }
+  if (mortalite !== undefined && (mortalite === null || mortalite < 0)) {
+    return res.status(400).json({ erreur: "Mortalité : un nombre positif ou nul est attendu." });
+  }
+  if (etat !== undefined && !["bien", "anormal", "urgent"].includes(etat)) {
+    return res.status(400).json({ erreur: "État : « bien », « anormal » ou « urgent » attendu." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: avant } = await client.query(
+      `SELECT sm.mortalite, ss.etat
+         FROM saisies_mortalite sm
+         LEFT JOIN saisies_sante ss
+           ON ss.bande_id = sm.bande_id AND ss.date_saisie = sm.date_saisie
+        WHERE sm.bande_id = $1 AND sm.date_saisie = $2::date
+          FOR UPDATE OF sm`,
+      [bandeId, jour]
+    );
+    const ligne = avant[0];
+    if (!ligne) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Aucune saisie ce jour-là pour cette bande." });
+    }
+
+    // Même garde-fou que pour la bande : la mortalité corrigée ne doit pas
+    // faire passer l'effectif restant sous zéro.
+    if (mortalite !== undefined) {
+      const { rows: etats } = await client.query(
+        `SELECT effectif_initial(b.id) AS depart,
+                sujets_morts(b.id) AS morts,
+                sujets_vendus(b.id) AS vendus
+           FROM bandes b WHERE b.id = $1`,
+        [bandeId]
+      );
+      const e = etats[0];
+      const mortsApres = Number(e.morts) - Number(ligne.mortalite) + mortalite;
+      if (Number(e.depart) - mortsApres - Number(e.vendus) < 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          erreur:
+            `Impossible : avec ${mortalite} morts ce jour-là, le total des morts ` +
+            `(${mortsApres}) et des vendus (${e.vendus}) dépasserait l'effectif de ` +
+            `départ (${e.depart}).`,
+        });
+      }
+
+      await client.query(
+        "UPDATE saisies_mortalite SET mortalite = $3 WHERE bande_id = $1 AND date_saisie = $2::date",
+        [bandeId, jour, mortalite]
+      );
+    }
+
+    if (etat !== undefined) {
+      // La saisie santé peut manquer (journée sans passage) : on la crée.
+      await client.query(
+        `INSERT INTO saisies_sante (bande_id, date_saisie, etat)
+         VALUES ($1, $2::date, $3)
+         ON CONFLICT (bande_id, date_saisie) DO UPDATE SET etat = EXCLUDED.etat`,
+        [bandeId, jour, etat]
+      );
+    }
+
+    const diff = differences(
+      { mortalite: ligne.mortalite, etat: ligne.etat },
+      {
+        ...(mortalite !== undefined ? { mortalite } : {}),
+        ...(etat !== undefined ? { etat } : {}),
+      },
+      ["mortalite", "etat"]
+    );
+
+    if (Object.keys(diff).length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Aucune modification : les valeurs sont identiques." });
+    }
+
+    await client.query("COMMIT");
+
+    parAdmin(req, {
+      action: "saisie_corrigee",
+      cibleType: "saisie",
+      cibleId: bandeId,
+      bandeId,
+      details: {
+        motif,
+        date: jour,
+        champs: Object.fromEntries(
+          Object.entries(diff).map(([colonne, valeurs]) => [
+            colonne,
+            { libelle: LIBELLES_SAISIE[colonne] ?? colonne, ...valeurs },
+          ])
+        ),
+      },
+    });
+
+    res.json({ bandeId, date: jour, corrections: Object.keys(diff).length });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur correction saisie :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
+const LIBELLES_SAISIE = { mortalite: "Mortalité", etat: "État de santé" };
+
+module.exports = { corrigerBande, corrigerSaisie, detailBandeAdmin, LIBELLES_BANDE: LIBELLES };

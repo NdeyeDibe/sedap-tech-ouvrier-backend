@@ -13,7 +13,11 @@ const {
   deverrouillerOuvrier,
   deverrouillerProprietaire,
 } = require("../controllers/adminComptesController");
-const { corrigerBande, detailBandeAdmin } = require("../controllers/adminBandesController");
+const {
+  corrigerBande,
+  corrigerSaisie,
+  detailBandeAdmin,
+} = require("../controllers/adminBandesController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -47,6 +51,8 @@ router.post("/poulaillers/:id/ouvrier", creerOuvrierResponsable);
 // Correction des chiffres saisis par l'ouvrier (reçus, morts à l'arrivée…).
 router.get("/bandes/:id", detailBandeAdmin);
 router.patch("/bandes/:id", corrigerBande);
+// Rattrape une faute de frappe sur une journée déjà verrouillée.
+router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
 
 // ------------------------------------------------------ comptes bloqués
 // Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.

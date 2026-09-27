@@ -426,6 +426,15 @@ module.exports = {
   historiqueSaisies,
   photosMortalite,
   listeAlertes,
+  // Réutilisées telles quelles par l'interface admin : le cahier admin
+  // (section IX) dit que le détail d'une bande affiche « le même contenu
+  // que le détail poulailler du propriétaire ». Les dupliquer, c'est se
+  // garantir qu'un jour les deux écrans ne diront plus la même chose.
+  REQUETE_SAISIES,
+  REQUETE_PROGRAMME,
+  REQUETE_DEPENSES,
+  REQUETE_STOCK,
+  LIBELLE_POSTE,
 };
 
 
