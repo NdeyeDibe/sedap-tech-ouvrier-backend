@@ -12,6 +12,7 @@ const { creerOuvrierResponsable } = require("../controllers/adminOuvriersControl
 const {
   deverrouillerOuvrier,
   deverrouillerProprietaire,
+  reinitialiserPinOuvrier,
 } = require("../controllers/adminComptesController");
 const {
   corrigerBande,
@@ -20,7 +21,16 @@ const {
 } = require("../controllers/adminBandesController");
 const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
 const { corrigerReception } = require("../controllers/adminReceptionsController");
-const { listeClients, creerClient } = require("../controllers/adminClientsController");
+const {
+  listeClients,
+  creerClient,
+  ficheClient,
+  modifierClient,
+  suspendreClient,
+  reactiverClient,
+  reinitialiserPinClient,
+  renvoyerLien,
+} = require("../controllers/adminClientsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -47,6 +57,16 @@ router.get("/tableau-de-bord", tableauDeBord);
 // SEDAP crée le propriétaire, sa ferme et ses poulaillers en une fois.
 router.get("/clients", listeClients);
 router.post("/clients", creerClient);
+
+// La fiche d'un propriétaire, et tout ce qu'on peut y décider (maquettes
+// 12 et 13). La suspension n'efface rien : elle ferme l'accès, au
+// propriétaire comme aux ouvriers de sa ferme.
+router.get("/clients/:id", ficheClient);
+router.patch("/clients/:id", modifierClient);
+router.patch("/clients/:id/suspendre", suspendreClient);
+router.patch("/clients/:id/reactiver", reactiverClient);
+router.post("/clients/:id/reinitialiser-pin", reinitialiserPinClient);
+router.post("/clients/:id/renvoyer-lien", renvoyerLien);
 
 // ---------------------------------------------------------------- fermes
 router.get("/fermes/:id", detailFerme);
@@ -75,5 +95,9 @@ router.patch("/receptions/:id", corrigerReception);
 // Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.
 router.patch("/ouvriers/:id/deverrouiller", deverrouillerOuvrier);
 router.patch("/proprietaires/:id/deverrouiller", deverrouillerProprietaire);
+
+// Code oublié, et non trois essais ratés : on efface le PIN, l'ouvrier en
+// choisit un nouveau au prochain démarrage de l'appli.
+router.post("/ouvriers/:id/reinitialiser-pin", reinitialiserPinOuvrier);
 
 module.exports = router;

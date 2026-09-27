@@ -9,8 +9,9 @@ const { niveauLePlusGrave } = require("../utils/alertes");
 // (cahier propriétaire v3), on la charge donc par lui.
 
 // État du compte propriétaire, tel que l'affiche la fiche (cahier VII).
-// La suspension s'ajoutera avec sa migration.
 function etatCompte(p) {
+  // La suspension prime : c'est une décision de SEDAP, pas un incident.
+  if (p.suspendu_le) return "suspendu";
   if (p.compte_verrouille) return "verrouille";
   if (!p.pin_hash) return "en_attente";
   return "actif";
@@ -28,7 +29,7 @@ async function detailFerme(req, res) {
       `SELECT f.id, f.nom, f.localite, f.cree_le,
               p.id AS proprietaire_id, p.prenom, p.nom AS proprietaire_nom,
               p.telephone, p.email, p.cree_le AS proprietaire_cree_le,
-              p.pin_hash, p.compte_verrouille
+              p.pin_hash, p.compte_verrouille, p.suspendu_le
          FROM fermes f
          JOIN proprietaires p ON p.id = f.proprietaire_id
         WHERE f.id = $1`,

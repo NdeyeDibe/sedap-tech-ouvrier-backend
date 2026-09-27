@@ -33,6 +33,7 @@ function genererToken(proprietaireId) {
 const REQUETE_PAR_IDENTIFIANT = `
   SELECT id, telephone, email, nom, prenom, pin_hash,
          tentatives_echouees, compte_verrouille,
+         suspendu_le, suspendu_motif,
          jeton_activation, jeton_expire_le, activee_le
   FROM proprietaires
   WHERE lower(email) = lower($1)
@@ -167,6 +168,16 @@ async function connexion(req, res) {
       return res.status(404).json({ erreur: "Aucun compte trouvé pour ces coordonnées." });
     }
 
+    // Suspension avant verrouillage : c'est une décision de SEDAP, pas un
+    // accident de saisie, et elle ne se lève pas en appelant le support
+    // pour « débloquer ».
+    if (proprietaire.suspendu_le) {
+      return res.status(403).json({
+        erreur: "Compte suspendu. Contactez SEDAP.",
+        compteSuspendu: true,
+      });
+    }
+
     if (proprietaire.compte_verrouille) {
       return res.status(403).json({
         erreur: "Compte verrouillé. Contactez le support SEDAP pour le débloquer.",
@@ -213,7 +224,7 @@ async function connexion(req, res) {
     }
 
     await pool.query(
-      "UPDATE proprietaires SET tentatives_echouees = 0 WHERE id = $1",
+      "UPDATE proprietaires SET tentatives_echouees = 0, derniere_connexion = now() WHERE id = $1",
       [proprietaire.id]
     );
 

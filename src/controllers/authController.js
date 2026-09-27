@@ -22,9 +22,18 @@ function genererToken(ouvrierId) {
 // faisait caractère pour caractère, et un compte créé avec un « + » ne
 // pouvait plus se connecter depuis un téléphone qui l'envoyait sans.
 const REQUETE_PAR_TELEPHONE = `
-  SELECT id, pin_hash, prenom, tentatives_echouees, compte_verrouille
-    FROM ouvriers
-   WHERE right(regexp_replace(telephone, '\\D', '', 'g'), ${NB_CHIFFRES}) = $1
+  SELECT o.id, o.pin_hash, o.prenom, o.tentatives_echouees, o.compte_verrouille,
+         -- La suspension du propriétaire de sa ferme : elle vaut pour ses
+         -- ouvriers aussi (cahier admin VII, maquette 13).
+         (SELECT p.suspendu_le
+            FROM personnel pe
+            JOIN poulaillers pl ON pl.id = pe.poulailler_id
+            JOIN fermes f ON f.id = pl.ferme_id
+            JOIN proprietaires p ON p.id = f.proprietaire_id
+           WHERE pe.ouvrier_id = o.id AND pe.fin_fonction IS NULL
+           LIMIT 1) AS ferme_suspendue
+    FROM ouvriers o
+   WHERE right(regexp_replace(o.telephone, '\\D', '', 'g'), ${NB_CHIFFRES}) = $1
    LIMIT 1
 `;
 
@@ -100,6 +109,16 @@ async function connexion(req, res) {
       return res.status(404).json({ erreur: "Aucun compte trouvé pour ce numéro." });
     }
 
+    // Le compte du propriétaire est suspendu : ses ouvriers ne saisissent
+    // plus non plus. Les laisser travailler produirait des données que
+    // plus personne ne regarde (cahier admin VII, maquette 13).
+    if (ouvrier.ferme_suspendue) {
+      return res.status(403).json({
+        erreur: "Cette ferme est suspendue. Contactez SEDAP.",
+        compteSuspendu: true,
+      });
+    }
+
     if (ouvrier.compte_verrouille) {
       return res.status(403).json({
         erreur: "Compte verrouillé. Contactez le support SEDAP pour le débloquer.",
@@ -136,7 +155,7 @@ async function connexion(req, res) {
     }
 
     await pool.query(
-      "UPDATE ouvriers SET tentatives_echouees = 0 WHERE id = $1",
+      "UPDATE ouvriers SET tentatives_echouees = 0, derniere_connexion = now() WHERE id = $1",
       [ouvrier.id]
     );
 

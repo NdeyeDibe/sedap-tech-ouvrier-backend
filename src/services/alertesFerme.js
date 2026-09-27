@@ -139,6 +139,10 @@ const REQUETE_FERME = `
     -- Un poulailler archivé disparaît des listes ; son historique reste
     -- dans les rapports (cahier admin VIII).
     AND pl.archive_le IS NULL
+    -- Une ferme suspendue ne produit plus d'alertes ni de notifications :
+    -- personne n'y saisit plus, « saisie manquante » n'aurait aucun sens
+    -- (cahier admin VII, maquette 13). Ses données restent consultables.
+    AND (SELECT p.suspendu_le FROM proprietaires p WHERE p.id = f.proprietaire_id) IS NULL
   ORDER BY f.id, pl.id
 `;
 

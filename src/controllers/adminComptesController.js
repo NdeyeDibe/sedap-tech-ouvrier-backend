@@ -102,7 +102,59 @@ function deverrouiller(type) {
   };
 }
 
+// POST /api/admin/ouvriers/:id/reinitialiser-pin
+//
+// L'ouvrier a oublié son code, pas seulement raté trois fois. Chez le
+// propriétaire on lui renvoie un lien ; l'ouvrier n'en a jamais eu : son
+// compte est créé par SEDAP et il choisit son PIN au premier démarrage de
+// l'appli. Effacer le PIN le ramène donc exactement là — l'écran de
+// création s'affiche de lui-même au prochain lancement.
+//
+// SEDAP ne choisit jamais le code de quelqu'un : ni ici, ni ailleurs.
+async function reinitialiserPinOuvrier(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ erreur: "Identifiant invalide." });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE ouvriers
+          SET pin_hash = NULL, tentatives_echouees = 0, compte_verrouille = false
+        WHERE id = $1
+        RETURNING id, prenom, nom, telephone`,
+      [id]
+    );
+
+    const ligne = rows[0];
+    if (!ligne) return res.status(404).json({ erreur: "Compte ouvrier introuvable." });
+
+    parAdmin(req, {
+      action: "pin_reinitialise",
+      cibleType: "ouvrier",
+      cibleId: id,
+      ...(await COMPTES.ouvrier.contexte(id)),
+      details: {},
+    });
+
+    res.json({
+      id: ligne.id,
+      prenom: ligne.prenom,
+      nom: ligne.nom,
+      telephone: ligne.telephone,
+      compte: "en_attente",
+      // Ce que l'admin doit dire à l'ouvrier au téléphone.
+      consigne:
+        "Demandez-lui d'ouvrir l'application : elle lui proposera de choisir un nouveau code à 4 chiffres.",
+    });
+  } catch (erreur) {
+    console.error("Erreur réinitialisation PIN ouvrier :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 module.exports = {
   deverrouillerOuvrier: deverrouiller("ouvrier"),
   deverrouillerProprietaire: deverrouiller("proprietaire"),
+  reinitialiserPinOuvrier,
 };
