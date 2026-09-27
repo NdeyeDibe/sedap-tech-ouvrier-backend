@@ -9,6 +9,10 @@ const {
   modifierMotDePasse,
 } = require("../controllers/adminAuthController");
 const { creerOuvrierResponsable } = require("../controllers/adminOuvriersController");
+const {
+  deverrouillerOuvrier,
+  deverrouillerProprietaire,
+} = require("../controllers/adminComptesController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
@@ -37,5 +41,10 @@ router.get("/fermes/:id", detailFerme);
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.
 router.post("/poulaillers/:id/ouvrier", creerOuvrierResponsable);
+
+// ------------------------------------------------------ comptes bloqués
+// Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.
+router.patch("/ouvriers/:id/deverrouiller", deverrouillerOuvrier);
+router.patch("/proprietaires/:id/deverrouiller", deverrouillerProprietaire);
 
 module.exports = router;

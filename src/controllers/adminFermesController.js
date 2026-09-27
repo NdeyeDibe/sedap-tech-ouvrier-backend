@@ -45,6 +45,7 @@ async function detailFerme(req, res) {
         `SELECT pl.id, pl.capacite,
                 o.id AS ouvrier_id, o.prenom AS ouvrier_prenom, o.nom AS ouvrier_nom,
                 o.telephone AS ouvrier_telephone, (o.pin_hash IS NOT NULL) AS ouvrier_pin_cree,
+                o.compte_verrouille AS ouvrier_verrouille,
                 (SELECT max(d) FROM (
                    SELECT max(sm.date_saisie) AS d FROM saisies_mortalite sm
                      JOIN bandes b ON b.id = sm.bande_id WHERE b.poulailler_id = pl.id
@@ -81,6 +82,12 @@ async function detailFerme(req, res) {
                 nom: c.ouvrier_nom,
                 telephone: c.ouvrier_telephone,
                 pinCree: c.ouvrier_pin_cree,
+                // Même vocabulaire que le compte du propriétaire, pour que
+                // l'écran affiche les deux de la même façon.
+                compte: etatCompte({
+                  compte_verrouille: c.ouvrier_verrouille,
+                  pin_hash: c.ouvrier_pin_cree ? "x" : null,
+                }),
               }
             : null,
           bande: l.bande_id
