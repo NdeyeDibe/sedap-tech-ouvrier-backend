@@ -13,6 +13,7 @@ const venteRoutes = require("./routes/venteRoutes");
 const proprietaireAuthRoutes = require("./routes/proprietaireAuthRoutes");
 const proprietaireRoutes = require("./routes/proprietaireRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const { listesPubliques } = require("./controllers/adminListesController");
 const { demarrerSurveillance } = require("./jobs/surveillance");
 const { migrer } = require("./db/migrate");
 const { charger: chargerSeuils } = require("./services/seuils");
@@ -47,6 +48,11 @@ app.use("/api/proprietaire", proprietaireRoutes);
 // Interface admin SEDAP (ordinateur et tablette). E-mail + mot de passe,
 // rôles admin et admin_principal — voir routes/adminRoutes.js.
 app.use("/api/admin", adminRoutes);
+
+// Listes de référence (couvoirs, souches, fournisseurs) : lecture libre.
+// Les applis ouvrier et propriétaire les affichent dans leurs formulaires ;
+// les masquées n'y figurent pas.
+app.get("/api/listes", listesPubliques);
 
 app.use((err, req, res, next) => {
   console.error("Erreur non gérée :", err);

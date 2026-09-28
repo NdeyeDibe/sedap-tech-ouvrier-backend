@@ -34,6 +34,9 @@ const {
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { listeAlertes, marquerAlerte } = require("../controllers/adminAlertesController");
 const push = require("../controllers/adminPushController");
+const programme = require("../controllers/adminProgrammeController");
+const listes = require("../controllers/adminListesController");
+const admins = require("../controllers/adminAdminsController");
 const {
   lireSeuils,
   modifierSeuils,
@@ -82,6 +85,32 @@ router.get("/tableau-de-bord", tableauDeBord);
 router.get("/seuils", lireSeuils);
 router.patch("/seuils", exigerAdminPrincipal, modifierSeuils);
 router.delete("/seuils", exigerAdminPrincipal, reinitialiserSeuils);
+
+// --------------------------------------------------- programme sanitaire
+// ★ Admin principal. Le programme est un MODÈLE : chaque bande en reçoit
+// une copie à son démarrage, modifier ceci ne touche aucune bande en cours.
+router.get("/programme", programme.lireProgramme);
+router.post("/programme", exigerAdminPrincipal, programme.ajouterActe);
+router.patch("/programme/:id", exigerAdminPrincipal, programme.modifierActe);
+router.delete("/programme/:id", exigerAdminPrincipal, programme.supprimerActe);
+
+// ------------------------------------------------ listes de référence
+// Une valeur déjà utilisée se masque, elle ne se supprime pas : effacer un
+// couvoir laisserait les bandes qui en viennent avec une provenance
+// orpheline.
+router.get("/listes", listes.lireListes);
+router.post("/listes", exigerAdminPrincipal, listes.ajouterValeur);
+router.patch("/listes/:id", exigerAdminPrincipal, listes.modifierValeur);
+router.delete("/listes/:id", exigerAdminPrincipal, listes.supprimerValeur);
+
+// ------------------------------------------------------ administrateurs
+// ★ Admin principal. On ne désactive ni son propre compte, ni le dernier
+// admin principal actif.
+router.get("/administrateurs", admins.listeAdmins);
+router.post("/administrateurs", exigerAdminPrincipal, admins.creerAdmin);
+router.patch("/administrateurs/:id", exigerAdminPrincipal, admins.modifierAdmin);
+router.patch("/administrateurs/:id/actif", exigerAdminPrincipal, admins.changerActivite);
+router.post("/administrateurs/:id/renvoyer-lien", exigerAdminPrincipal, admins.renvoyerLien);
 
 // -------------------------------------------------------------- alertes
 // Les alertes se recalculent ; seul leur suivi se stocke (migration 021).

@@ -20,7 +20,10 @@ const LIBELLES_SAISIES = {
   alimentation: "aliments",
 };
 
-const ORDRE_NIVEAU = { urgent: 0, surveiller: 1, ok: 2 };
+// Les fermes suspendues ferment la liste : plus personne n'y saisit, il
+// n'y a rien à y faire aujourd'hui — mais les cacher ferait croire qu'on
+// a perdu un client (maquette 24).
+const ORDRE_NIVEAU = { urgent: 0, surveiller: 1, ok: 2, suspendu: 3 };
 
 // Toutes les fermes, même celles sans poulailler encore : l'admin doit les
 // voir, c'est lui qui les construit. La dernière saisie est la plus récente
@@ -29,6 +32,12 @@ const REQUETE_FERMES = `
   SELECT
     f.id, f.nom, f.localite,
     p.id AS proprietaire_id, p.prenom AS proprietaire_prenom, p.nom AS proprietaire_nom,
+    p.suspendu_le,
+    -- Compté ici et pas à partir des lignes : les poulaillers d'une ferme
+    -- suspendue sont écartés en amont, la ferme afficherait « 0 poulailler »
+    -- alors qu'elle en a.
+    (SELECT count(*) FROM poulaillers pl2
+      WHERE pl2.ferme_id = f.id AND pl2.archive_le IS NULL) AS nb_poulaillers,
     (SELECT max(d) FROM (
        SELECT max(sm.date_saisie) AS d FROM saisies_mortalite sm
          JOIN bandes b ON b.id = sm.bande_id
@@ -71,12 +80,16 @@ async function tableauDeBord(req, res) {
             prenom: f.proprietaire_prenom,
             nom: f.proprietaire_nom,
           },
-          poulaillers: 0,
+          poulaillers: f.suspendu_le ? Number(f.nb_poulaillers) : 0,
           poulaillersEnVente: 0,
           bandesActives: 0,
           sujetsVivants: 0,
           alertes: 0,
-          statut: "ok",
+          // Une ferme suspendue n'a ni alertes ni saisies : ses poulaillers
+          // sont écartés en amont (alertesFerme.js). Son statut le dit, au
+          // lieu d'afficher « tout va bien » sur une ferme à l'arrêt.
+          statut: f.suspendu_le ? "suspendu" : "ok",
+          suspendue: Boolean(f.suspendu_le),
           derniereSaisie: f.derniere_saisie,
         },
       ])
@@ -90,7 +103,7 @@ async function tableauDeBord(req, res) {
       const ferme = parFerme.get(l.ferme_id);
       if (!ferme) continue;
 
-      ferme.poulaillers += 1;
+      if (!ferme.suspendue) ferme.poulaillers += 1;
 
       if (l.bande_id) {
         ferme.bandesActives += 1;
@@ -99,7 +112,9 @@ async function tableauDeBord(req, res) {
       }
 
       ferme.alertes += l.alertes.length;
-      ferme.statut = niveauLePlusGrave([ferme.statut, l.niveau]);
+      if (!ferme.suspendue) {
+        ferme.statut = niveauLePlusGrave([ferme.statut, l.niveau]);
+      }
 
       for (const a of l.alertes) {
         if (a.niveau === "urgent") urgentes += 1;
