@@ -33,6 +33,7 @@ const {
 } = require("../controllers/adminClientsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
 const { listeAlertes, marquerAlerte } = require("../controllers/adminAlertesController");
+const push = require("../controllers/adminPushController");
 const {
   rapportParFerme,
   rapportMensuel,
@@ -55,6 +56,16 @@ router.use(exigerAdmin);
 router.get("/auth/moi", moi);
 router.patch("/auth/moi", modifierMoi);
 router.patch("/auth/mot-de-passe", modifierMotDePasse);
+
+// ---------------------------------------------------------- notifications
+// Un abonnement push vaut pour UN appareil : l'admin les règle depuis
+// chacun de ses appareils (maquette 19).
+router.get("/push/cle", push.clePublique);
+router.get("/push/etat", push.etat);
+router.post("/push/abonner", push.abonner);
+router.patch("/push/preferences", push.modifierPreferences);
+router.delete("/push/abonner", push.desabonner);
+router.post("/push/test", push.tester);
 
 // ------------------------------------------------------- tableau de bord
 router.get("/tableau-de-bord", tableauDeBord);

@@ -21,16 +21,20 @@ if (pushActif) {
   console.warn("⚠️  Notifications push désactivées : clés VAPID absentes.");
 }
 
-// Envoie une notification à tous les appareils d'un propriétaire.
+// Envoie une notification à tous les appareils d'un destinataire.
 // « type » sert à respecter ses réglages (ex. alertes mortalité coupées).
-async function notifierProprietaire(proprietaireId, contenu, type = null) {
+//
+// La colonne change selon qu'on écrit à un propriétaire ou à un admin ; le
+// reste — préférences, purge des abonnements périmés — est identique, d'où
+// une seule fonction.
+async function notifier(colonne, id, contenu, type = null) {
   if (!pushActif) return 0;
 
   const { rows } = await pool.query(
     `SELECT id, endpoint, p256dh, auth, preferences
        FROM abonnements_push
-      WHERE proprietaire_id = $1`,
-    [proprietaireId]
+      WHERE ${colonne} = $1`,
+    [id]
   );
 
   let envoyees = 0;
@@ -64,4 +68,15 @@ async function notifierProprietaire(proprietaireId, contenu, type = null) {
   return envoyees;
 }
 
-module.exports = { pushActif, notifierProprietaire, VAPID_PUBLIC_KEY };
+const notifierProprietaire = (id, contenu, type = null) =>
+  notifier("proprietaire_id", id, contenu, type);
+
+const notifierAdmin = (id, contenu, type = null) =>
+  notifier("admin_id", id, contenu, type);
+
+module.exports = {
+  pushActif,
+  notifierProprietaire,
+  notifierAdmin,
+  VAPID_PUBLIC_KEY,
+};

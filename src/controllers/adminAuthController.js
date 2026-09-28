@@ -40,6 +40,8 @@ function profil(admin) {
     nom: admin.nom,
     role: admin.role,
     derniereConnexion: admin.derniere_connexion,
+    // Affiché sous le titre de l'écran Paramètres (maquette 19).
+    creeLe: admin.cree_le ?? null,
   };
 }
 
@@ -124,7 +126,7 @@ async function connexion(req, res) {
       `UPDATE admins
           SET tentatives_echouees = 0, bloque_jusqua = NULL, derniere_connexion = now()
         WHERE id = $1
-        RETURNING id, email, prenom, nom, role, derniere_connexion`,
+        RETURNING id, email, prenom, nom, role, derniere_connexion, cree_le`,
       [admin.id]
     );
 
@@ -234,7 +236,7 @@ async function reinitialiser(req, res) {
 async function moi(req, res) {
   try {
     const { rows } = await pool.query(
-      "SELECT id, email, prenom, nom, role, derniere_connexion FROM admins WHERE id = $1",
+      "SELECT id, email, prenom, nom, role, derniere_connexion, cree_le FROM admins WHERE id = $1",
       [req.utilisateur.id]
     );
     if (rows.length === 0) return res.status(404).json({ erreur: "Admin introuvable." });
@@ -260,7 +262,7 @@ async function modifierMoi(req, res) {
               nom    = coalesce($2, nom),
               email  = coalesce(lower($3), email)
         WHERE id = $4
-        RETURNING id, email, prenom, nom, role, derniere_connexion`,
+        RETURNING id, email, prenom, nom, role, derniere_connexion, cree_le`,
       [
         prenom != null ? String(prenom).trim() : null,
         nom != null ? String(nom).trim() : null,

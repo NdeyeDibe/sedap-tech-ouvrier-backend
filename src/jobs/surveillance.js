@@ -1,6 +1,7 @@
 const pool = require("../db/pool");
 const { alertesDeLaFerme } = require("../services/alertesFerme");
-const { pushActif, notifierProprietaire } = require("../services/notificationsPush");
+const { pushActif, notifierProprietaire, notifierAdmin } = require("../services/notificationsPush");
+const { chargerToutesLesFermes, ouvrierDe } = require("../services/alertesFerme");
 
 // Tâches automatiques du serveur, lancées au démarrage par server.js.
 //
@@ -116,7 +117,7 @@ async function envoyerNouvellesAlertes() {
   if (!pushActif) return;
 
   const { rows: proprietaires } = await pool.query(
-    "SELECT DISTINCT proprietaire_id FROM abonnements_push"
+    "SELECT DISTINCT proprietaire_id FROM abonnements_push WHERE proprietaire_id IS NOT NULL"
   );
 
   for (const { proprietaire_id: proprietaireId } of proprietaires) {
@@ -173,6 +174,92 @@ async function envoyerNouvellesAlertes() {
   // Le journal n'a pas besoin de garder plus d'un mois d'historique.
   await pool.query(
     "DELETE FROM alertes_notifiees WHERE jour < current_date - 30"
+  );
+}
+
+// ------------------------------------------------- alertes, côté SEDAP
+
+// Ce que l'admin peut couper depuis l'écran Paramètres (maquette 19) : les
+// alertes ORANGE de mortalité et de stock d'aliment. Les rouges ne se
+// coupent pas — une mortalité qui explose doit réveiller quelqu'un.
+const PREFERENCE_ADMIN = { mortalite: "mortalite", aliment: "aliment" };
+
+// Les admins ne surveillent pas une ferme mais toutes : on charge l'état
+// une seule fois, pas une fois par admin.
+async function envoyerNouvellesAlertesAdmins() {
+  if (!pushActif) return;
+
+  const { rows: admins } = await pool.query(
+    `SELECT DISTINCT a.id, a.prenom
+       FROM abonnements_push ap
+       JOIN admins a ON a.id = ap.admin_id
+      WHERE ap.admin_id IS NOT NULL AND a.actif`
+  );
+  if (admins.length === 0) return;
+
+  const lignes = await chargerToutesLesFermes();
+  const alertes = lignes
+    .filter((l) => l.bande_id)
+    .flatMap((l) =>
+      l.alertes.map((a) => ({
+        ...a,
+        bandeId: l.bande_id,
+        ferme: l.ferme_nom,
+        poulailler: { id: l.poulailler_id, nom: l.poulailler_nom },
+        responsable: ouvrierDe(l),
+      }))
+    );
+  if (alertes.length === 0) return;
+
+  for (const admin of admins) {
+    const nouvelles = [];
+
+    for (const alerte of alertes) {
+      // Même garde-fou que côté propriétaire : la clé primaire refuse le
+      // doublon, donc une insertion qui passe est une alerte jamais envoyée.
+      const { rowCount } = await pool.query(
+        `INSERT INTO alertes_notifiees_admins (admin_id, bande_id, type, cle, niveau)
+              VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING`,
+        [admin.id, alerte.bandeId, alerte.type, alerte.cle, alerte.niveau]
+      );
+      if (rowCount > 0) nouvelles.push(alerte);
+    }
+
+    if (nouvelles.length === 0) continue;
+
+    // SEDAP suit toutes les fermes : les avalanches y sont la règle, pas
+    // l'exception. Au-delà de deux alertes, un seul message.
+    if (nouvelles.length > 2) {
+      const urgentes = nouvelles.filter((a) => a.niveau === "urgent").length;
+      await notifierAdmin(admin.id, {
+        titre: `${nouvelles.length} nouvelles alertes`,
+        corps: urgentes
+          ? `Dont ${urgentes} urgente${urgentes > 1 ? "s" : ""}. Touchez pour voir.`
+          : "Touchez pour voir le détail.",
+        url: "/alertes",
+        badge: alertes.length,
+      });
+      continue;
+    }
+
+    for (const alerte of nouvelles) {
+      await notifierAdmin(
+        admin.id,
+        {
+          titre: `${alerte.niveau === "urgent" ? "🔴" : "🟠"} ${alerte.titre} — ${alerte.ferme}`,
+          corps: `${alerte.poulailler.nom} · ${alerte.message}`,
+          url: "/alertes",
+          tag: `${alerte.bandeId}-${alerte.type}`,
+          badge: alertes.length,
+        },
+        PREFERENCE_ADMIN[alerte.type] ?? null
+      );
+    }
+  }
+
+  await pool.query(
+    "DELETE FROM alertes_notifiees_admins WHERE jour < current_date - 30"
   );
 }
 
@@ -253,6 +340,9 @@ async function passageSurveillance() {
   // l'alerte « réception à chiffrer » qui en découle.
   await annoncerReceptions();
   await envoyerNouvellesAlertes();
+  // SEDAP est prévenue après les propriétaires : c'est à eux d'agir en
+  // premier, l'admin intervient quand ça ne bouge pas.
+  await envoyerNouvellesAlertesAdmins();
 }
 
 function demarrerSurveillance() {
@@ -265,6 +355,7 @@ module.exports = {
   demarrerSurveillance,
   annoncerReceptions,
   envoyerNouvellesAlertes,
+  envoyerNouvellesAlertesAdmins,
   supprimerVieuxVocaux,
   identifiantCloudinary,
 };
