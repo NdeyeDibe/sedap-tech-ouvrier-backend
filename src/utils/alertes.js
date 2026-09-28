@@ -213,6 +213,11 @@ function alertesBande(bande) {
       message:
         `Sans prix : ${aChiffrer.elements.join(", ")}` +
         (urgent ? ` — depuis ${aChiffrer.jours} jours` : ""),
+      // Où le propriétaire doit aller pour régler ça. Sans cette précision,
+      // l'alerte le déposait sur le poulailler et il devait retrouver seul
+      // le bon écran (retour Mengué, sept. 2026). Les poussins et le stock
+      // se chiffrent au même endroit ; les ramassages ont le leur.
+      cible: bande.receptionsSansPrix > 0 ? "receptions" : "ramassages",
     });
   }
 
