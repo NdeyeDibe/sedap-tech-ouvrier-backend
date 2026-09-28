@@ -32,6 +32,7 @@ const {
   renvoyerLien,
 } = require("../controllers/adminClientsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
+const { listeAlertes, marquerAlerte } = require("../controllers/adminAlertesController");
 const {
   rapportParFerme,
   rapportMensuel,
@@ -57,6 +58,13 @@ router.patch("/auth/mot-de-passe", modifierMotDePasse);
 
 // ------------------------------------------------------- tableau de bord
 router.get("/tableau-de-bord", tableauDeBord);
+
+// -------------------------------------------------------------- alertes
+// Les alertes se recalculent ; seul leur suivi se stocke (migration 021).
+// « Traitée » et « Ignorée » ne changent que la liste de SEDAP : le
+// propriétaire voit son alerte tant que la situation dure.
+router.get("/alertes", listeAlertes);
+router.patch("/alertes/suivi", marquerAlerte);
 
 // --------------------------------------------------------------- clients
 // SEDAP crée le propriétaire, sa ferme et ses poulaillers en une fois.

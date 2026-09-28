@@ -230,6 +230,9 @@ async function charger(parametres) {
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
     return {
       ...ligne,
+      // La bande reconstruite : l'écran Alertes de l'admin y lit le jour du
+      // vaccin ou du pesage en retard, pour dire depuis quand ça dure.
+      bande,
       alertes: alertesBande(bande),
       niveau: statutBande(bande),
       // Lu par l'admin pour son bloc « Saisies manquantes aujourd'hui ».
