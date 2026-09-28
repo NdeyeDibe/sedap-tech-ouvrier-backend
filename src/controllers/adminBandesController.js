@@ -6,6 +6,8 @@ const {
   REQUETE_DEPENSES,
   REQUETE_STOCK,
   LIBELLE_POSTE,
+  REQUETE_PHOTOS,
+  libelleJour,
 } = require("./proprietaireController");
 
 // Combien de jours d'historique l'écran reçoit d'un coup. La maquette en
@@ -721,4 +723,56 @@ async function corrigerSaisie(req, res) {
 
 const LIBELLES_SAISIE = { mortalite: "Mortalité", etat: "État de santé" };
 
-module.exports = { corrigerBande, corrigerSaisie, detailBandeAdmin, LIBELLES_BANDE: LIBELLES };
+
+// GET /api/admin/bandes/:bandeId/saisies/:date/photos
+//
+// Les photos de mortalité et le vocal de santé d'une journée. Même contenu
+// que chez le propriétaire, même requête — mais sans vérifier à qui
+// appartient la bande : c'est tout l'objet de l'interface admin.
+//
+// SEDAP en a besoin avant de corriger une saisie : un chiffre de mortalité
+// aberrant se juge sur les photos, pas sur le chiffre seul.
+async function photosSaisieAdmin(req, res) {
+  const bandeId = Number(req.params.bandeId);
+  const { date } = req.params;
+
+  if (!Number.isInteger(bandeId)) {
+    return res.status(400).json({ erreur: "Identifiant de bande invalide." });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ erreur: "Date attendue au format AAAA-MM-JJ." });
+  }
+
+  try {
+    const { rows } = await pool.query(REQUETE_PHOTOS, [bandeId, date]);
+    if (rows.length === 0) {
+      return res.status(404).json({ erreur: "Aucune saisie à cette date." });
+    }
+
+    const saisie = rows[0];
+
+    res.json({
+      date: saisie.date_saisie,
+      libelle: libelleJour(saisie.date_saisie),
+      morts: Number(saisie.mortalite),
+      etat: saisie.etat ?? "bien",
+      // vocal_url est nul sur les saisies antérieures à son ajout : le
+      // vocal a existé, mais n'a jamais quitté le téléphone de l'ouvrier.
+      aVocal: saisie.a_vocal ?? false,
+      vocalUrl: saisie.vocal_url ?? null,
+      photos: (saisie.photos ?? []).map((url, i) => ({ numero: i + 1, url })),
+      photosSante: saisie.photos_sante ?? [],
+    });
+  } catch (erreur) {
+    console.error("Erreur photos de saisie (admin) :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+module.exports = {
+  corrigerBande,
+  corrigerSaisie,
+  detailBandeAdmin,
+  photosSaisieAdmin,
+  LIBELLES_BANDE: LIBELLES,
+};

@@ -425,6 +425,11 @@ module.exports = {
   // que le détail poulailler du propriétaire ». Les dupliquer, c'est se
   // garantir qu'un jour les deux écrans ne diront plus la même chose.
   REQUETE_SAISIES,
+  // Photos et vocal d'une journée : l'admin les affiche aussi (il doit
+  // pouvoir juger sur pièces avant de corriger une saisie), mais sans le
+  // contrôle de propriété — SEDAP voit toutes les fermes.
+  REQUETE_PHOTOS,
+  libelleJour,
   REQUETE_PROGRAMME,
   REQUETE_DEPENSES,
   REQUETE_STOCK,

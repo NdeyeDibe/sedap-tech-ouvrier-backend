@@ -18,6 +18,7 @@ const {
   corrigerBande,
   corrigerSaisie,
   detailBandeAdmin,
+  photosSaisieAdmin,
 } = require("../controllers/adminBandesController");
 const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
 const { corrigerReception } = require("../controllers/adminReceptionsController");
@@ -155,6 +156,9 @@ router.get("/bandes/:id", detailBandeAdmin);
 router.patch("/bandes/:id", corrigerBande);
 // Rattrape une faute de frappe sur une journée déjà verrouillée.
 router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
+// Les photos de mortalité et le vocal de santé d'une journée : SEDAP juge
+// sur pièces avant de corriger un chiffre.
+router.get("/bandes/:bandeId/saisies/:date/photos", photosSaisieAdmin);
 
 // ---------------------------------------------------------------- ventes
 // Une vente fausse déforme le bilan : SEDAP peut la corriger ou la retirer.
