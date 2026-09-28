@@ -32,6 +32,11 @@ const {
   renvoyerLien,
 } = require("../controllers/adminClientsController");
 const { tableauDeBord } = require("../controllers/adminTableauDeBordController");
+const {
+  rapportParFerme,
+  rapportMensuel,
+  rapportAnnuel,
+} = require("../controllers/adminRapportsController");
 const { detailFerme } = require("../controllers/adminFermesController");
 const { exigerAdmin } = require("../middleware/exigerAdmin");
 
@@ -67,6 +72,14 @@ router.patch("/clients/:id/suspendre", suspendreClient);
 router.patch("/clients/:id/reactiver", reactiverClient);
 router.post("/clients/:id/reinitialiser-pin", reinitialiserPinClient);
 router.post("/clients/:id/renvoyer-lien", renvoyerLien);
+
+// -------------------------------------------------------------- rapports
+// Trois vues du même exercice : par ferme, par mois, par année. Les
+// chiffres sortent de bilans_bandes et de utils/finances.js — ceux-là
+// mêmes qui alimentent les bilans du propriétaire.
+router.get("/rapports/par-ferme", rapportParFerme);
+router.get("/rapports/mensuel", rapportMensuel);
+router.get("/rapports/annuel", rapportAnnuel);
 
 // ---------------------------------------------------------------- fermes
 router.get("/fermes/:id", detailFerme);
