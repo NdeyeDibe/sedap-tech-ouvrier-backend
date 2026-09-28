@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { alertesBande, statutBande, kgDistribues } = require("../utils/alertes");
+const { seuilsActuels } = require("./seuils");
 
 // État courant des poulaillers d'un propriétaire — ou de toutes les fermes
 // pour l'admin SEDAP —, alertes comprises.
@@ -12,11 +13,14 @@ const { alertesBande, statutBande, kgDistribues } = require("../utils/alertes");
 
 // Heure à partir de laquelle une saisie du jour incomplète devient une
 // alerte. Heure de Dakar, quel que soit le fuseau du serveur.
+// Valeur d'origine, conservée pour les écrans qui l'affichent avant tout
+// chargement. La valeur en vigueur vient de services/seuils.js.
 const HEURE_LIMITE_SAISIE = "18:00";
 
 // Un pesage oublié ne se rattrape pas (il est lié à un jour précis) :
 // on le signale pendant 2 jours, le temps que le propriétaire réagisse,
 // puis il ne reste visible que dans le programme du poulailler.
+// Idem : valeur d'origine seulement, le réglage en vigueur est en base.
 const JOURS_ALERTE_PESAGE = 2;
 
 const REQUETE_FERME = `
@@ -81,7 +85,7 @@ const REQUETE_FERME = `
      OR EXISTS (SELECT 1 FROM saisies_sans_donnee sd
                  WHERE sd.bande_id = b.id AND sd.date_saisie = current_date
                    AND sd.etape = 'alimentation')) AS alimentation_faite,
-    (now() AT TIME ZONE 'Africa/Dakar')::time >= '${HEURE_LIMITE_SAISIE}' AS heure_limite_passee,
+    (now() AT TIME ZONE 'Africa/Dakar')::time >= $4::time AS heure_limite_passee,
 
     -- Réceptions rattachées à cette bande dont le prix n'a pas encore été
     -- renseigné par le propriétaire (vue receptions_ferme, migration 015).
@@ -147,7 +151,7 @@ const REQUETE_FERME = `
 `;
 
 // Actes du programme sanitaire en retard : le premier vaccin manqué, et le
-// pesage manqué le plus récent s'il date de moins de JOURS_ALERTE_PESAGE.
+// pesage manqué le plus récent s'il date de moins de N jours ($2).
 const REQUETE_RETARDS = `
   SELECT bande_id, type, nom, jour_debut, date_limite
     FROM programme_bandes
@@ -155,7 +159,7 @@ const REQUETE_RETARDS = `
      AND en_retard
      AND (
        type = 'vaccin'
-       OR (type = 'pesage' AND date_limite >= current_date - ${JOURS_ALERTE_PESAGE})
+       OR (type = 'pesage' AND date_limite >= current_date - $2::int)
      )
    ORDER BY ordre
 `;
@@ -208,13 +212,24 @@ async function chargerToutesLesFermes() {
 }
 
 async function charger(parametres) {
-  const { rows } = await pool.query(REQUETE_FERME, parametres);
+  // Les seuils réglables (maquette 20) partent en paramètres : ils
+  // changent sans redéploiement, la requête ne peut donc plus les figer à
+  // la construction du module.
+  const seuils = seuilsActuels();
+
+  const { rows } = await pool.query(REQUETE_FERME, [
+    ...parametres,
+    seuils.heure_controle_saisies,
+  ]);
 
   const bandeIds = rows.filter((l) => l.bande_id).map((l) => l.bande_id);
 
   const retardsParBande = {};
   if (bandeIds.length > 0) {
-    const { rows: retards } = await pool.query(REQUETE_RETARDS, [bandeIds]);
+    const { rows: retards } = await pool.query(REQUETE_RETARDS, [
+      bandeIds,
+      seuils.pesage_jours_signalement,
+    ]);
     for (const r of retards) {
       (retardsParBande[r.bande_id] ??= []).push(r);
     }

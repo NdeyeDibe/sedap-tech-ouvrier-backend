@@ -35,12 +35,17 @@ const { tableauDeBord } = require("../controllers/adminTableauDeBordController")
 const { listeAlertes, marquerAlerte } = require("../controllers/adminAlertesController");
 const push = require("../controllers/adminPushController");
 const {
+  lireSeuils,
+  modifierSeuils,
+  reinitialiserSeuils,
+} = require("../controllers/adminSeuilsController");
+const {
   rapportParFerme,
   rapportMensuel,
   rapportAnnuel,
 } = require("../controllers/adminRapportsController");
 const { detailFerme } = require("../controllers/adminFermesController");
-const { exigerAdmin } = require("../middleware/exigerAdmin");
+const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
 // Toutes les routes commencent par /api/admin.
@@ -69,6 +74,14 @@ router.post("/push/test", push.tester);
 
 // ------------------------------------------------------- tableau de bord
 router.get("/tableau-de-bord", tableauDeBord);
+
+// ------------------------------------------------------ seuils d'alerte
+// ★ Admin principal seulement : ces valeurs gouvernent les trois
+// interfaces, un réglage malheureux éteint les alertes de toutes les
+// fermes en même temps.
+router.get("/seuils", lireSeuils);
+router.patch("/seuils", exigerAdminPrincipal, modifierSeuils);
+router.delete("/seuils", exigerAdminPrincipal, reinitialiserSeuils);
 
 // -------------------------------------------------------------- alertes
 // Les alertes se recalculent ; seul leur suivi se stocke (migration 021).

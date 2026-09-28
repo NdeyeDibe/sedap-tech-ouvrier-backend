@@ -15,6 +15,7 @@ const proprietaireRoutes = require("./routes/proprietaireRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const { demarrerSurveillance } = require("./jobs/surveillance");
 const { migrer } = require("./db/migrate");
+const { charger: chargerSeuils } = require("./services/seuils");
 
 const app = express();
 
@@ -103,6 +104,11 @@ async function demarrer() {
     console.error(`   ${erreur.message}`);
     process.exit(1);
   }
+
+  // Les seuils d'alerte vivent en base depuis la migration 023 : on les lit
+  // une fois au démarrage, puis à chaque modification. Un échec ici n'est
+  // pas bloquant — le service retombe sur les valeurs d'origine de SEDAP.
+  await chargerSeuils();
 
   ecouter();
 }

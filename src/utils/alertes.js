@@ -4,6 +4,8 @@
 // interfaces les consultent : si chacune les recalculait, rien ne garantirait
 // qu'un même poulailler soit « urgent » partout au même moment.
 
+const { seuilsActuels } = require("../services/seuils");
+
 const NIVEAU = { OK: "ok", SURVEILLER: "surveiller", URGENT: "urgent" };
 
 const GRAVITE = [NIVEAU.OK, NIVEAU.SURVEILLER, NIVEAU.URGENT];
@@ -33,42 +35,62 @@ function alerteMortalite({
 }) {
   if (!sujetsVivants) return NIVEAU.OK;
 
+  const seuils = seuilsActuels();
   const taux = (mortsDuJour / sujetsVivants) * 100;
-  const [veille, avantVeille, troisiemeJour] = mortsJoursPrecedents;
 
   if (etatOuvrier === "urgent") return NIVEAU.URGENT;
-  if (taux > 0.5) return NIVEAU.URGENT;
+  if (taux > seuils.mortalite_taux_urgent) return NIVEAU.URGENT;
 
-  const hausseContinue =
-    veille != null &&
-    avantVeille != null &&
-    troisiemeJour != null &&
-    mortsDuJour > veille &&
-    veille > avantVeille &&
-    avantVeille > troisiemeJour;
-  if (hausseContinue) return NIVEAU.URGENT;
+  // « Hausse continue » se règle en nombre de SAISIES : 4 saisies, c'est
+  // aujourd'hui plus les trois jours précédents, donc trois hausses de
+  // suite. D'où le −1.
+  if (enHausseDepuis(mortsDuJour, mortsJoursPrecedents, seuils.mortalite_hausse_continue - 1)) {
+    return NIVEAU.URGENT;
+  }
 
   // État « Anormal » déclaré par l'ouvrier : à surveiller, même quand les
   // chiffres restent sous les seuils — c'est lui qui voit les sujets.
   // (Cahier ouvrier V.2, repris par les cahiers propriétaire et admin.)
   if (etatOuvrier === "anormal") return NIVEAU.SURVEILLER;
 
-  if (veille != null && veille > 0 && mortsDuJour >= veille * 2) {
+  const veille = mortsJoursPrecedents[0];
+  if (veille != null && veille > 0 && mortsDuJour >= veille * seuils.mortalite_facteur_veille) {
     return NIVEAU.SURVEILLER;
   }
 
-  if (ageJours > 7 && taux > 0.3) return NIVEAU.SURVEILLER;
+  if (
+    ageJours > seuils.mortalite_age_seuil_orange &&
+    taux > seuils.mortalite_taux_surveiller
+  ) {
+    return NIVEAU.SURVEILLER;
+  }
 
   return NIVEAU.OK;
+}
+
+// N hausses consécutives, en partant d'aujourd'hui vers le passé. Une
+// journée manquante interrompt la série : on ne sait pas ce qui s'y est
+// passé, et la supposer en hausse déclencherait une urgence sur un trou.
+function enHausseDepuis(mortsDuJour, precedents, hausses) {
+  if (hausses < 1) return false;
+
+  let courant = mortsDuJour;
+  for (let i = 0; i < hausses; i += 1) {
+    const precedent = precedents[i];
+    if (precedent == null || courant <= precedent) return false;
+    courant = precedent;
+  }
+  return true;
 }
 
 // ratio = stock restant (kg) / quantité distribuée la veille (kg)
 function alerteAliment({ stockRestantKg, distribueVeilleKg }) {
   if (!distribueVeilleKg) return NIVEAU.OK;
 
+  const seuils = seuilsActuels();
   const ratio = stockRestantKg / distribueVeilleKg;
-  if (ratio <= 3) return NIVEAU.URGENT;
-  if (ratio <= 5) return NIVEAU.SURVEILLER;
+  if (ratio <= seuils.aliment_autonomie_urgent) return NIVEAU.URGENT;
+  if (ratio <= seuils.aliment_autonomie_surveiller) return NIVEAU.SURVEILLER;
   return NIVEAU.OK;
 }
 
