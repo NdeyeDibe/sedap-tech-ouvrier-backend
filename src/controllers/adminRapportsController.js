@@ -27,6 +27,7 @@ const REQUETE_BANDES_TERMINEES = `
   SELECT bb.bande_id, bb.numero, bb.date_fin, bb.morts, bb.vendus,
          bb.taux_mortalite, bb.benefice_net, bb.sujets_sans_prix,
          effectif_initial(bb.bande_id) AS effectif_initial,
+         pl.nom AS poulailler_nom,
          f.id AS ferme_id, f.nom AS ferme_nom,
          p.id AS proprietaire_id, p.prenom AS proprietaire_prenom,
          p.nom AS proprietaire_nom
@@ -104,6 +105,9 @@ function grouperParFerme(bandes) {
         effectifInitial: 0,
         benefice: 0,
         derniereBande: null,
+        // Le détail, pour que « toucher une ferme ouvre ses bandes et
+        // leurs bilans » (maquette 15) n'oblige pas à un second appel.
+        bandes: [],
       });
     }
 
@@ -118,6 +122,15 @@ function grouperParFerme(bandes) {
     if (!f.derniereBande) {
       f.derniereBande = { id: b.bande_id, numero: b.numero, date: b.date_fin };
     }
+
+    f.bandes.push({
+      id: b.bande_id,
+      numero: b.numero,
+      poulailler: b.poulailler_nom,
+      date: b.date_fin,
+      benefice: nombre(b.benefice_net),
+      tauxMortalite: nombre(b.taux_mortalite),
+    });
   }
 
   return [...fermes.values()].map((f) => ({

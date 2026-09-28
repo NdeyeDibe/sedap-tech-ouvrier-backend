@@ -110,6 +110,28 @@ function decimal(valeur) {
   return Number.isFinite(n) ? n : undefined;
 }
 
+// Le bilan d'une bande, tel que `bilans_bandes` le calcule. PostgreSQL rend
+// les NUMERIC en chaînes : sans cette conversion, « 3200.00 » partirait au
+// front comme du texte et s'additionnerait de travers.
+function bilanChiffre(ligne) {
+  if (!ligne) return null;
+  return {
+    dureeJours: ligne.duree_jours == null ? null : Number(ligne.duree_jours),
+    morts: Number(ligne.morts ?? 0),
+    vendus: Number(ligne.vendus ?? 0),
+    tauxMortalite: Number(ligne.taux_mortalite ?? 0),
+    totalDepenses: Number(ligne.total_depenses ?? 0),
+    totalRecettes: Number(ligne.total_recettes ?? 0),
+    beneficeNet: Number(ligne.benefice_net ?? 0),
+    // Ce qui manque encore pour que le bilan soit complet : des sujets
+    // ramassés sans prix, des réceptions sans prix, des poussins sans prix.
+    // Les afficher évite qu'on prenne un bilan partiel pour un bilan final.
+    sujetsSansPrix: Number(ligne.sujets_sans_prix ?? 0),
+    receptionsSansPrix: Number(ligne.receptions_sans_prix ?? 0),
+    poussinsSansPrix: !!ligne.poussins_sans_prix,
+  };
+}
+
 function texte(valeur) {
   if (vide(valeur)) return null;
   const t = String(valeur).trim();
@@ -351,7 +373,7 @@ async function detailBandeAdmin(req, res) {
 
     // Le reste du contenu vient des mêmes requêtes que l'écran du
     // propriétaire — c'est ce que demande le cahier admin (section IX).
-    const [saisies, programme, depenses, stock, ventes, receptions, corrections] = await Promise.all([
+    const [saisies, programme, depenses, stock, ventes, receptions, corrections, bilan] = await Promise.all([
       pool.query(REQUETE_SAISIES, [bandeId, JOURS_HISTORIQUE]),
       pool.query(REQUETE_PROGRAMME, [bandeId]),
       pool.query(REQUETE_DEPENSES, [bandeId]),
@@ -393,6 +415,17 @@ async function detailBandeAdmin(req, res) {
                              'reception_corrigee')
           ORDER BY j.cree_le DESC
           LIMIT 50`,
+        [bandeId]
+      ),
+      // Le bilan chiffré, pris tel quel dans `bilans_bandes` — la même vue
+      // que l'écran Finances du propriétaire. Le refaire ici ferait courir
+      // le risque d'un écart de quelques francs entre son bilan et celui de
+      // SEDAP : discussion impossible à trancher au téléphone.
+      pool.query(
+        `SELECT duree_jours, morts, vendus, taux_mortalite,
+                total_depenses, total_recettes, sujets_sans_prix, benefice_net,
+                receptions_sans_prix, poussins_sans_prix
+           FROM bilans_bandes WHERE bande_id = $1`,
         [bandeId]
       ),
     ]);
@@ -440,6 +473,11 @@ async function detailBandeAdmin(req, res) {
         restant: b.restant,
         tauxMortalite: b.taux_mortalite == null ? 0 : Number(b.taux_mortalite),
       },
+
+      // Maquette 18 — le bilan de la bande, identique à celui du
+      // propriétaire. Une bande en cours en a un aussi : il est partiel,
+      // l'écran le dit.
+      bilan: bilanChiffre(bilan.rows[0]),
 
       // Un jour se verrouille au changement de jour : passé cette limite,
       // l'ouvrier ne peut plus y toucher, seul SEDAP le peut.
