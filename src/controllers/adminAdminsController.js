@@ -1,6 +1,8 @@
-const crypto = require("crypto");
 const pool = require("../db/pool");
 const { parAdmin } = require("../services/journal");
+const { nouveauJeton } = require("../utils/motDePasse");
+const { envoyer } = require("../services/email");
+const { invitationAdmin } = require("../services/emailModeles");
 
 // Comptes administrateurs — cahier admin, maquette 23.
 //
@@ -36,6 +38,24 @@ function lienInvitation(jeton, admin) {
     `pour choisir votre mot de passe. Ce lien est valable 24 heures.`;
 
   return { jeton, lien, message, expireLe: admin.jeton_expire_le };
+}
+
+/**
+ * Compose le lien puis l'envoie par e-mail. Le message reste renvoyé à
+ * l'écran quoi qu'il arrive : si l'envoi échoue, l'admin principal le
+ * transmet à la main, comme avant.
+ */
+async function delivrerInvitation(jeton, admin) {
+  const invitation = lienInvitation(jeton, admin);
+
+  const envoi = invitation.lien
+    ? await envoyer({
+        a: admin.email,
+        ...invitationAdmin({ prenom: admin.prenom, lien: invitation.lien }),
+      })
+    : "non_configure"; // sans ADMIN_URL, le lien n'existe pas : rien à envoyer
+
+  return { ...invitation, envoi, destinataire: admin.email };
 }
 
 function profil(a) {
@@ -92,7 +112,10 @@ async function creerAdmin(req, res) {
   if (!ROLES.includes(role)) return res.status(400).json({ erreur: "Rôle inconnu." });
 
   try {
-    const jeton = crypto.randomBytes(32).toString("base64url");
+    // La base ne garde que l'empreinte : c'est elle que cherche
+    // adminAuthController.reinitialiser, et une fuite de la table admins ne
+    // donnerait aucun lien utilisable.
+    const { jeton, empreinte } = nouveauJeton();
 
     const { rows } = await pool.query(
       `INSERT INTO admins (prenom, nom, email, role, actif, cree_par,
@@ -101,7 +124,7 @@ async function creerAdmin(req, res) {
                     now() + ($7 || ' hours')::interval)
          RETURNING id, prenom, nom, email, role, actif, cree_le, derniere_connexion,
                    mot_de_passe_hash, jeton_expire_le`,
-      [prenom, nom, email, role, req.utilisateur.id, jeton, String(HEURES_VALIDITE_LIEN)]
+      [prenom, nom, email, role, req.utilisateur.id, empreinte, String(HEURES_VALIDITE_LIEN)]
     );
 
     parAdmin(req, {
@@ -113,7 +136,7 @@ async function creerAdmin(req, res) {
 
     res.status(201).json({
       admin: profil(rows[0]),
-      invitation: lienInvitation(jeton, rows[0]),
+      invitation: await delivrerInvitation(jeton, rows[0]),
     });
   } catch (erreur) {
     if (erreur.code === "23505") {
@@ -245,7 +268,7 @@ async function renvoyerLien(req, res) {
   if (!Number.isInteger(id)) return res.status(400).json({ erreur: "Identifiant invalide." });
 
   try {
-    const jeton = crypto.randomBytes(32).toString("base64url");
+    const { jeton, empreinte } = nouveauJeton();
 
     const { rows } = await pool.query(
       `UPDATE admins
@@ -253,7 +276,7 @@ async function renvoyerLien(req, res) {
               jeton_expire_le = now() + ($3 || ' hours')::interval
         WHERE id = $1
         RETURNING id, prenom, nom, email, mot_de_passe_hash, jeton_expire_le`,
-      [id, jeton, String(HEURES_VALIDITE_LIEN)]
+      [id, empreinte, String(HEURES_VALIDITE_LIEN)]
     );
     if (!rows[0]) return res.status(404).json({ erreur: "Admin introuvable." });
 
@@ -264,7 +287,7 @@ async function renvoyerLien(req, res) {
       details: {},
     });
 
-    res.json({ invitation: lienInvitation(jeton, rows[0]) });
+    res.json({ invitation: await delivrerInvitation(jeton, rows[0]) });
   } catch (erreur) {
     console.error("Erreur renvoi du lien admin :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });

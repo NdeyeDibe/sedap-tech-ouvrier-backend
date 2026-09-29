@@ -6,6 +6,8 @@ const {
   nouveauJeton,
   empreinteJeton,
 } = require("../utils/motDePasse");
+const { envoyer, envoiConfigure } = require("../services/email");
+const { motDePasseOublieAdmin } = require("../services/emailModeles");
 
 // Authentification des admins SEDAP — cahier admin v1.1, section III.
 // E-mail + mot de passe, jeton de 12 heures, blocage 15 minutes après
@@ -152,9 +154,18 @@ async function motDePasseOublie(req, res) {
     return res.status(400).json({ erreur: "E-mail requis." });
   }
 
+  // Sans service d'envoi, cet écran promettrait un message qui ne part
+  // jamais. Mieux vaut le dire que laisser quelqu'un surveiller sa boîte.
+  if (!envoiConfigure()) {
+    return res.status(503).json({
+      erreur:
+        "L'envoi d'e-mails n'est pas encore configuré. Demandez à l'admin principal de vous renvoyer un lien d'accès.",
+    });
+  }
+
   try {
     const { rows } = await pool.query(
-      "SELECT id, email, actif FROM admins WHERE lower(email) = lower($1)",
+      "SELECT id, email, prenom, actif FROM admins WHERE lower(email) = lower($1)",
       [String(email).trim()]
     );
     const admin = rows[0];
@@ -173,10 +184,13 @@ async function motDePasseOublie(req, res) {
 
     const lien = `${URL_ADMIN}/reinitialiser?jeton=${jeton}`;
 
-    // TODO(ENVOI) : aucun service d'e-mail n'est encore branché. En attendant,
-    // le lien apparaît dans les logs Railway, que seule l'équipe SEDAP lit.
-    // À remplacer par l'envoi réel dès que le service existe.
-    console.info(`[mot de passe oublié] lien pour ${admin.email} : ${lien}`);
+    // L'issue de l'envoi n'est pas renvoyée à l'écran : dire « échec » ne
+    // servirait qu'à confirmer que cette adresse a un compte. Elle est dans
+    // les journaux Railway, où SEDAP peut la lire.
+    await envoyer({
+      a: admin.email,
+      ...motDePasseOublieAdmin({ prenom: admin.prenom, lien }),
+    });
 
     res.json(REPONSE);
   } catch (erreur) {

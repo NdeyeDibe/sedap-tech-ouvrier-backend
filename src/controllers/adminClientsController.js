@@ -2,6 +2,8 @@ const crypto = require("crypto");
 const pool = require("../db/pool");
 const { parAdmin } = require("../services/journal");
 const { creerStockInitial } = require("../utils/stockInitial");
+const { envoyer } = require("../services/email");
+const { activationProprietaire } = require("../services/emailModeles");
 
 // Clients — cahier admin, section VII.
 //
@@ -242,7 +244,10 @@ async function creerClient(req, res) {
       },
       ferme: { id: ferme.id, nom: ferme.nom },
       poulaillers: poulaillersCrees,
-      activation: lienActivation(jeton, proprietaire),
+      // Après le COMMIT : un e-mail qui traîne ne doit pas tenir une
+      // transaction ouverte. `envoyer` ne lève jamais, le ROLLBACK du catch
+      // ne risque donc pas de s'exécuter après le COMMIT.
+      activation: await delivrerActivation(jeton, proprietaire),
     });
   } catch (erreur) {
     await client.query("ROLLBACK");
@@ -280,6 +285,27 @@ function lienActivation(jeton, proprietaire, raison = "nouveau") {
         `Ce lien est valable 7 jours.`;
 
   return { jeton, lien, message, expireLe: proprietaire.jeton_expire_le };
+}
+
+/**
+ * Compose le lien puis l'envoie par e-mail.
+ *
+ * L'adresse d'un propriétaire est facultative — beaucoup n'en ont pas, et
+ * c'est le numéro de téléphone qui les identifie. Sans adresse, l'envoi
+ * répond « sans_adresse » et l'écran garde son bouton « Copier » : SEDAP
+ * transmet le lien par WhatsApp, comme aujourd'hui.
+ */
+async function delivrerActivation(jeton, proprietaire, raison = "nouveau") {
+  const activation = lienActivation(jeton, proprietaire, raison);
+
+  const envoi = activation.lien
+    ? await envoyer({
+        a: proprietaire.email,
+        ...activationProprietaire({ prenom: proprietaire.prenom, lien: activation.lien, raison }),
+      })
+    : "non_configure"; // sans PROPRIETAIRE_URL, il n'y a pas de lien à envoyer
+
+  return { ...activation, envoi, destinataire: proprietaire.email ?? null };
 }
 
 
@@ -617,7 +643,7 @@ async function reinitialiserPinClient(req, res) {
           SET pin_hash = NULL, tentatives_echouees = 0, compte_verrouille = false,
               jeton_activation = $2, jeton_expire_le = now() + ($3 || ' days')::interval
         WHERE id = $1
-        RETURNING id, prenom, nom, jeton_expire_le`,
+        RETURNING id, prenom, nom, email, jeton_expire_le`,
       [id, jeton, String(JOURS_VALIDITE_LIEN)]
     );
     if (!rows[0]) return res.status(404).json({ erreur: "Propriétaire introuvable." });
@@ -630,7 +656,7 @@ async function reinitialiserPinClient(req, res) {
       details: {},
     });
 
-    res.json({ id, activation: lienActivation(jeton, rows[0], "pin") });
+    res.json({ id, activation: await delivrerActivation(jeton, rows[0], "pin") });
   } catch (erreur) {
     console.error("Erreur réinitialisation PIN :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
@@ -659,7 +685,7 @@ async function renvoyerLien(req, res) {
       `UPDATE proprietaires
           SET jeton_activation = $2, jeton_expire_le = now() + ($3 || ' days')::interval
         WHERE id = $1
-        RETURNING id, prenom, nom, jeton_expire_le`,
+        RETURNING id, prenom, nom, email, jeton_expire_le`,
       [id, jeton, String(JOURS_VALIDITE_LIEN)]
     );
 
@@ -671,7 +697,7 @@ async function renvoyerLien(req, res) {
       details: {},
     });
 
-    res.json({ id, activation: lienActivation(jeton, rows[0]) });
+    res.json({ id, activation: await delivrerActivation(jeton, rows[0]) });
   } catch (erreur) {
     console.error("Erreur renvoi du lien :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
