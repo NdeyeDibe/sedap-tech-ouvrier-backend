@@ -1,6 +1,8 @@
 const pool = require("../db/pool");
 const { chargerFerme } = require("../services/alertesFerme");
 const { niveauLePlusGrave } = require("../utils/alertes");
+const { creerStockInitial } = require("../utils/stockInitial");
+const { parAdmin } = require("../services/journal");
 
 // Détail d'une ferme — cahier admin v1.1, section VIII (maquette 07).
 //
@@ -158,4 +160,112 @@ async function detailFerme(req, res) {
   }
 }
 
-module.exports = { detailFerme };
+/**
+ * Le premier « Poulailler N » libre, quand l'écran n'a pas donné de nom.
+ *
+ * On compte les numéros pris et non les poulaillers : une ferme qui a
+ * « Poulailler 1 » et « Bâtiment Nord » doit proposer 2, pas 3.
+ */
+function premierNumeroLibre(existants) {
+  const pris = new Set(
+    existants
+      .map((p) => /^poulailler\s+(\d+)$/i.exec(String(p.nom ?? "").trim())?.[1])
+      .filter(Boolean)
+      .map(Number)
+  );
+  let n = 1;
+  while (pris.has(n)) n += 1;
+  return `Poulailler ${n}`;
+}
+
+// POST /api/admin/fermes/:id/poulaillers
+//
+// Une ferme s'agrandit : le propriétaire construit un bâtiment de plus, et
+// il faut pouvoir l'enregistrer sans recréer le client. Jusqu'ici les
+// poulaillers ne naissaient qu'à la création du compte (cahier VII).
+//
+// Le poulailler arrive vide et sans responsable : c'est ensuite « Ajouter
+// un responsable » sur la fiche de la ferme, puis l'ouvrier démarre sa
+// première bande. Son catalogue de stock est créé tout de suite, sinon
+// l'ouvrier ne pourrait rien déclarer à sa première réception.
+async function ajouterPoulailler(req, res) {
+  const fermeId = Number(req.params.id);
+  if (!Number.isInteger(fermeId)) {
+    return res.status(400).json({ erreur: "Identifiant de ferme invalide." });
+  }
+
+  const nomDemande = String(req.body.nom ?? "").trim();
+  const brut = req.body.capacite;
+  const capacite = brut === null || brut === undefined || brut === "" ? null : Number(brut);
+
+  if (capacite !== null && (!Number.isInteger(capacite) || capacite <= 0)) {
+    return res.status(400).json({
+      erreur: "Capacité invalide : un nombre de sujets supérieur à 0 est attendu.",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    const { rows: fermes } = await client.query("SELECT id FROM fermes WHERE id = $1", [fermeId]);
+    if (!fermes[0]) return res.status(404).json({ erreur: "Ferme introuvable." });
+
+    // Les noms servent à l'ouvrier comme au propriétaire pour se repérer :
+    // deux « Poulailler 2 » dans la même ferme rendraient toute alerte
+    // ambiguë. Les archivés ne comptent pas, leur nom se réutilise.
+    const { rows: existants } = await client.query(
+      `SELECT nom FROM poulaillers WHERE ferme_id = $1 AND archive_le IS NULL`,
+      [fermeId]
+    );
+
+    const nom = nomDemande || premierNumeroLibre(existants);
+
+    const pris = existants.some(
+      (p) => (p.nom ?? "").trim().toLowerCase() === nom.toLowerCase()
+    );
+    if (pris) {
+      return res.status(409).json({
+        erreur: `Cette ferme a déjà un poulailler nommé « ${nom} ».`,
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      `INSERT INTO poulaillers (ferme_id, nom, capacite)
+       VALUES ($1, $2, $3)
+       RETURNING id, nom, capacite, cree_le`,
+      [fermeId, nom, capacite]
+    );
+    const poulailler = rows[0];
+
+    await creerStockInitial(client, poulailler.id);
+
+    await client.query("COMMIT");
+
+    parAdmin(req, {
+      action: "poulailler_ajoute",
+      cibleType: "poulailler",
+      cibleId: poulailler.id,
+      fermeId,
+      poulaillerId: poulailler.id,
+      details: { nom, capacite },
+    });
+
+    res.status(201).json({
+      poulailler: {
+        id: poulailler.id,
+        nom: poulailler.nom,
+        capacite: poulailler.capacite,
+        creeLe: poulailler.cree_le,
+      },
+    });
+  } catch (erreur) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Erreur ajout de poulailler :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { detailFerme, ajouterPoulailler };

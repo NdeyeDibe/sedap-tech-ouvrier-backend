@@ -48,7 +48,7 @@ const {
   rapportMensuel,
   rapportAnnuel,
 } = require("../controllers/adminRapportsController");
-const { detailFerme } = require("../controllers/adminFermesController");
+const { detailFerme, ajouterPoulailler } = require("../controllers/adminFermesController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -145,6 +145,9 @@ router.get("/rapports/annuel", rapportAnnuel);
 
 // ---------------------------------------------------------------- fermes
 router.get("/fermes/:id", detailFerme);
+// Une ferme s'agrandit après la création du compte : on ajoute le bâtiment
+// ici plutôt que de refaire passer le client par la création.
+router.post("/fermes/:id/poulaillers", ajouterPoulailler);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.
