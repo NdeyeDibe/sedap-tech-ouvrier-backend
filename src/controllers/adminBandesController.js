@@ -613,7 +613,12 @@ async function corrigerSaisie(req, res) {
   const mortalite = "mortalite" in req.body ? entier(req.body.mortalite) : undefined;
   const etat = "etat" in req.body ? texte(req.body.etat) : undefined;
 
-  if (mortalite === undefined && etat === undefined) {
+  // Alimentation et produits consommés : leur correction touche aussi le
+  // stock, d'où deux fonctions dédiées plus bas.
+  const alimentation = Array.isArray(req.body.alimentation) ? req.body.alimentation : undefined;
+  const produits = Array.isArray(req.body.produits) ? req.body.produits : undefined;
+
+  if (mortalite === undefined && etat === undefined && alimentation === undefined && produits === undefined) {
     return res.status(400).json({ erreur: "Rien à corriger." });
   }
   if (mortalite !== undefined && (mortalite === null || mortalite < 0)) {
@@ -680,6 +685,16 @@ async function corrigerSaisie(req, res) {
       );
     }
 
+    // Ces deux-là rendent au stock ce que l'ancienne saisie avait déduit
+    // avant de déduire la nouvelle, et refusent de faire passer un stock
+    // sous zéro.
+    const aliments = alimentation
+      ? await corrigerAlimentation(client, bandeId, jour, alimentation)
+      : null;
+    const produitsChanges = produits
+      ? await corrigerProduits(client, bandeId, jour, produits)
+      : [];
+
     const diff = differences(
       { mortalite: ligne.mortalite, etat: ligne.etat },
       {
@@ -688,6 +703,13 @@ async function corrigerSaisie(req, res) {
       },
       ["mortalite", "etat"]
     );
+
+    if (aliments && aliments.avant !== aliments.apres) {
+      diff.alimentation = { avant: aliments.avant, apres: aliments.apres };
+    }
+    if (produitsChanges.length > 0) {
+      diff.produits = { avant: "—", apres: produitsChanges.join(" · ") };
+    }
 
     if (Object.keys(diff).length === 0) {
       await client.query("ROLLBACK");
@@ -716,6 +738,9 @@ async function corrigerSaisie(req, res) {
     res.json({ bandeId, date: jour, corrections: Object.keys(diff).length });
   } catch (erreur) {
     await client.query("ROLLBACK");
+    // Refus métier (stock négatif, ligne inconnue, aliment en double) :
+    // le message est fait pour être lu par SEDAP, on le renvoie tel quel.
+    if (erreur.statut) return res.status(erreur.statut).json({ erreur: erreur.message });
     console.error("Erreur correction saisie :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
   } finally {
@@ -723,7 +748,255 @@ async function corrigerSaisie(req, res) {
   }
 }
 
-const LIBELLES_SAISIE = { mortalite: "Mortalité", etat: "État de santé" };
+const LIBELLES_SAISIE = {
+  mortalite: "Mortalité",
+  etat: "État de santé",
+  alimentation: "Aliment distribué",
+  produits: "Produits utilisés",
+};
+
+// ------------------------------------- alimentation et produits du jour
+
+// Un sac d'aliment. Même valeur que l'application ouvrier (lib/stockMock).
+const POIDS_SAC_KG = 50;
+
+const ALIMENTS = {
+  demarrage: "Démarrage",
+  croissance: "Croissance",
+  finition: "Finition",
+};
+
+const kgTotal = (sacs, kg) => Number(sacs || 0) * POIDS_SAC_KG + Number(kg || 0);
+
+/**
+ * Lit les lignes d'alimentation et les produits consommés d'une journée,
+ * pour que la fenêtre de correction montre ce qu'il y a à corriger.
+ *
+ * GET /api/admin/bandes/:bandeId/saisies/:date/detail
+ */
+async function detailSaisieAdmin(req, res) {
+  const bandeId = Number(req.params.bandeId);
+  const { date } = req.params;
+
+  if (!Number.isInteger(bandeId)) {
+    return res.status(400).json({ erreur: "Identifiant de bande invalide." });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ erreur: "Date attendue au format AAAA-MM-JJ." });
+  }
+
+  try {
+    const [alimentation, produits] = await Promise.all([
+      pool.query(
+        `SELECT type_aliment, sacs, kg_supplementaires
+           FROM saisies_alimentation
+          WHERE bande_id = $1 AND date_saisie = $2::date
+          ORDER BY type_aliment`,
+        [bandeId, date]
+      ),
+      // Le stock encore disponible accompagne chaque ligne : SEDAP doit
+      // voir tout de suite si augmenter une quantité est possible.
+      pool.query(
+        `SELECT pu.id, pu.quantite,
+                sp.nom AS nom, sp.unite, sp.produit_id, sp.quantite AS stock_restant,
+                -- stock_autres_produits n'a pas de colonne unite : un
+                -- produit « Autre » est saisi librement par l'ouvrier, sans
+                -- unité imposée.
+                sap.nom AS nom_autre, sap.quantite AS stock_restant_autre
+           FROM produits_utilises pu
+           LEFT JOIN stock_produits sp ON sp.id = pu.stock_produit_id
+           LEFT JOIN stock_autres_produits sap ON sap.id = pu.stock_autre_produit_id
+          WHERE pu.bande_id = $1 AND pu.date_saisie = $2::date
+          ORDER BY pu.id`,
+        [bandeId, date]
+      ),
+    ]);
+
+    res.json({
+      bandeId,
+      date,
+      alimentation: alimentation.rows.map((l) => ({
+        typeAliment: l.type_aliment,
+        libelle: ALIMENTS[l.type_aliment] ?? l.type_aliment,
+        sacs: Number(l.sacs),
+        kg: Number(l.kg_supplementaires),
+        totalKg: kgTotal(l.sacs, l.kg_supplementaires),
+      })),
+      produits: produits.rows.map((p) => ({
+        id: p.id,
+        libelle: p.nom ?? p.nom_autre ?? "Produit",
+        categorie: p.produit_id ?? "autres",
+        unite: p.unite ?? "",
+        quantite: Number(p.quantite),
+        // Ce qui reste en stock aujourd'hui, hors cette ligne.
+        stockRestant: Number(p.stock_restant ?? p.stock_restant_autre ?? 0),
+        estAutre: p.nom === null,
+      })),
+      aliments: Object.entries(ALIMENTS).map(([valeur, libelle]) => ({ valeur, libelle })),
+    });
+  } catch (erreur) {
+    console.error("Erreur détail d'une saisie :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+/**
+ * Corrige les lignes d'alimentation d'une journée, stock compris.
+ *
+ * Le principe est celui de l'application ouvrier quand elle modifie une
+ * saisie du jour : on RE-CRÉDITE d'abord au stock tout ce que l'ancienne
+ * saisie avait déduit, puis on déduit la nouvelle. Sans ce retour, corriger
+ * 40 kg en 25 kg déduirait 25 kg de plus au lieu d'en rendre 15.
+ *
+ * Renvoie { avant, apres } pour le journal, ou lève { statut, message }.
+ */
+async function corrigerAlimentation(client, bandeId, jour, lignes) {
+  const vues = new Set();
+  const nouvelles = lignes.map((l) => {
+    const type = String(l?.typeAliment ?? "");
+    if (!ALIMENTS[type]) throw { statut: 400, message: `Type d'aliment inconnu : ${type}.` };
+    if (vues.has(type)) {
+      throw { statut: 400, message: `${ALIMENTS[type]} apparaît deux fois : une seule ligne par aliment.` };
+    }
+    vues.add(type);
+
+    const sacs = Number(l.sacs ?? 0);
+    const kg = Number(l.kg ?? 0);
+    if (!Number.isFinite(sacs) || sacs < 0 || !Number.isFinite(kg) || kg < 0) {
+      throw { statut: 400, message: `${ALIMENTS[type]} : des quantités positives ou nulles sont attendues.` };
+    }
+    return { type, sacs, kg };
+  });
+
+  // Une ligne vide n'a pas de sens : c'est une suppression de ligne.
+  const retenues = nouvelles.filter((l) => kgTotal(l.sacs, l.kg) > 0);
+
+  const { rows: anciennes } = await client.query(
+    `SELECT type_aliment, sacs, kg_supplementaires
+       FROM saisies_alimentation
+      WHERE bande_id = $1 AND date_saisie = $2::date
+      FOR UPDATE`,
+    [bandeId, jour]
+  );
+
+  for (const a of anciennes) {
+    await client.query(
+      `UPDATE stock_produits SET quantite = quantite + $1
+        WHERE produit_id = 'aliment' AND variante_id = $2
+          AND poulailler_id = (SELECT poulailler_id FROM bandes WHERE id = $3)`,
+      [kgTotal(a.sacs, a.kg_supplementaires), a.type_aliment, bandeId]
+    );
+  }
+
+  await client.query(
+    "DELETE FROM saisies_alimentation WHERE bande_id = $1 AND date_saisie = $2::date",
+    [bandeId, jour]
+  );
+
+  for (const l of retenues) {
+    await client.query(
+      `INSERT INTO saisies_alimentation (bande_id, date_saisie, type_aliment, sacs, kg_supplementaires)
+       VALUES ($1, $2::date, $3, $4, $5)`,
+      [bandeId, jour, l.type, l.sacs, l.kg]
+    );
+
+    const { rows } = await client.query(
+      `UPDATE stock_produits SET quantite = quantite - $1
+        WHERE produit_id = 'aliment' AND variante_id = $2
+          AND poulailler_id = (SELECT poulailler_id FROM bandes WHERE id = $3)
+        RETURNING quantite`,
+      [kgTotal(l.sacs, l.kg), l.type, bandeId]
+    );
+
+    // Le stock ne peut pas devenir négatif : il dirait qu'on a distribué
+    // un aliment qui n'est jamais entré dans le poulailler.
+    if (rows[0] && Number(rows[0].quantite) < 0) {
+      throw {
+        statut: 409,
+        message:
+          `Impossible : ${ALIMENTS[l.type]} passerait à ${Number(rows[0].quantite)} kg en stock. ` +
+          `Corrigez d'abord la réception si c'est elle qui est fausse.`,
+      };
+    }
+  }
+
+  const resume = (lignes2) =>
+    lignes2
+      .map((l) => `${ALIMENTS[l.type_aliment ?? l.type]} ${kgTotal(l.sacs, l.kg_supplementaires ?? l.kg)} kg`)
+      .sort()
+      .join(", ") || "aucun aliment";
+
+  return { avant: resume(anciennes), apres: resume(retenues) };
+}
+
+/**
+ * Corrige les quantités de produits consommés ce jour-là.
+ *
+ * Une quantité ramenée à 0 supprime la ligne : c'est ainsi qu'on retire un
+ * produit déclaré par erreur. Le stock suit l'écart, dans un sens comme
+ * dans l'autre.
+ */
+async function corrigerProduits(client, bandeId, jour, corrections) {
+  const changements = [];
+
+  for (const c of corrections) {
+    const id = Number(c?.id);
+    const quantite = Number(c?.quantite);
+    if (!Number.isInteger(id)) throw { statut: 400, message: "Ligne de produit invalide." };
+    if (!Number.isFinite(quantite) || quantite < 0) {
+      throw { statut: 400, message: "Produit : une quantité positive ou nulle est attendue." };
+    }
+
+    const { rows } = await client.query(
+      `SELECT pu.id, pu.quantite, pu.stock_produit_id, pu.stock_autre_produit_id,
+              coalesce(sp.nom, sap.nom) AS nom
+         FROM produits_utilises pu
+         LEFT JOIN stock_produits sp ON sp.id = pu.stock_produit_id
+         LEFT JOIN stock_autres_produits sap ON sap.id = pu.stock_autre_produit_id
+        WHERE pu.id = $1 AND pu.bande_id = $2 AND pu.date_saisie = $3::date
+        FOR UPDATE OF pu`,
+      [id, bandeId, jour]
+    );
+    const ligne = rows[0];
+    if (!ligne) {
+      throw { statut: 404, message: "Cette ligne de produit n'existe pas pour cette journée." };
+    }
+
+    const ancienne = Number(ligne.quantite);
+    if (ancienne === quantite) continue;
+
+    // Écart positif = on consomme davantage, le stock baisse d'autant.
+    const ecart = quantite - ancienne;
+    const table = ligne.stock_produit_id ? "stock_produits" : "stock_autres_produits";
+    const stockId = ligne.stock_produit_id ?? ligne.stock_autre_produit_id;
+
+    const { rows: apres } = await client.query(
+      `UPDATE ${table} SET quantite = quantite - $1 WHERE id = $2 RETURNING quantite`,
+      [ecart, stockId]
+    );
+
+    if (apres[0] && Number(apres[0].quantite) < 0) {
+      throw {
+        statut: 409,
+        message:
+          `Impossible : ${ligne.nom ?? "ce produit"} passerait à ${Number(apres[0].quantite)} en stock. ` +
+          `Corrigez d'abord la réception si c'est elle qui est fausse.`,
+      };
+    }
+
+    if (quantite === 0) {
+      await client.query("DELETE FROM produits_utilises WHERE id = $1", [id]);
+    } else {
+      await client.query("UPDATE produits_utilises SET quantite = $2 WHERE id = $1", [id, quantite]);
+    }
+
+    changements.push(`${ligne.nom ?? "Produit"} : ${ancienne} → ${quantite === 0 ? "retiré" : quantite}`);
+  }
+
+  return changements;
+}
+
+
 
 
 // GET /api/admin/bandes/:bandeId/saisies/:date/photos
@@ -779,5 +1052,6 @@ module.exports = {
   corrigerSaisie,
   detailBandeAdmin,
   photosSaisieAdmin,
+  detailSaisieAdmin,
   LIBELLES_BANDE: LIBELLES,
 };
