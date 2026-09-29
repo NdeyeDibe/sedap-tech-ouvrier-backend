@@ -35,10 +35,21 @@ async function listerStock(req, res) {
 // propriétaire a déjà commandé et payé lui-même : l'ouvrier ne renseigne
 // que la quantité reçue, prix laissé NULL jusqu'à ce que le propriétaire
 // le complète depuis son interface (retour Ndeye, sept. 2026).
+// Un vaccin s'achète en flacons et se consomme en doses : le stock est
+// tenu en doses, la réception compte des flacons. Sans conversion, quatre
+// flacons de 1 000 doses donnaient « 4 » en stock, et plus aucune
+// vaccination n'était possible (retour Ndeye, sept. 2026).
+//
+// Les autres produits n'ont pas de contenance : un sac est un sac. Leur
+// facteur vaut 1 et rien ne change pour eux.
+const PRODUITS_DOSES = ["vaccin"];
+const DOSES_ADMISES = [500, 1000];
+
 async function recevoirStock(req, res) {
   const { produitId } = req.params;
   const { provenance, lignes } = req.body;
   const source = req.body.source === "proprietaire" ? "proprietaire" : "ouvrier";
+  const produitDose = PRODUITS_DOSES.includes(produitId);
 
   if (!Array.isArray(lignes) || lignes.length === 0) {
     return res.status(400).json({ erreur: "Au moins une ligne de réception est requise." });
@@ -49,6 +60,16 @@ async function recevoirStock(req, res) {
     }
     if (source === "ouvrier" && (!ligne.prixUnitaire || ligne.prixUnitaire <= 0)) {
       return res.status(400).json({ erreur: "Chaque ligne doit avoir un prix unitaire valide." });
+    }
+    if (produitDose) {
+      const doses = Number(ligne.dosesParUnite);
+      // On refuse plutôt que de supposer : enregistrer 4 au lieu de 4 000
+      // ne se voit qu'au moment de vacciner, quand il est trop tard.
+      if (!DOSES_ADMISES.includes(doses)) {
+        return res.status(400).json({
+          erreur: "Indiquez la contenance des flacons : 500 ou 1 000 doses.",
+        });
+      }
     }
   }
 
@@ -72,20 +93,35 @@ async function recevoirStock(req, res) {
       }
       const stockProduitId = resultatProduit.rows[0].id;
 
+      // Ce que la personne a compté (4 flacons) et ce que ça fait dans
+      // l'unité du stock (4 000 doses).
+      const unites = Number(ligne.quantiteRecue);
+      const parUnite = produitDose ? Number(ligne.dosesParUnite) : 1;
+      const quantiteStock = unites * parUnite;
+
+      // Le prix saisi est celui d'un flacon ; la table le veut par unité
+      // de stock, puisque la vue des dépenses calcule quantité × prix.
+      const prixParUnite =
+        source === "proprietaire" ? null : Number(ligne.prixUnitaire) / parUnite;
+
       await client.query(
         "UPDATE stock_produits SET quantite = quantite + $1 WHERE id = $2",
-        [ligne.quantiteRecue, stockProduitId]
+        [quantiteStock, stockProduitId]
       );
 
       const resultatReception = await client.query(
-        `INSERT INTO stock_receptions (stock_produit_id, quantite_recue, prix_unitaire, provenance, source)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        `INSERT INTO stock_receptions
+           (stock_produit_id, quantite_recue, prix_unitaire, provenance, source,
+            unites_recues, doses_par_unite)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
         [
           stockProduitId,
-          ligne.quantiteRecue,
-          source === "proprietaire" ? null : ligne.prixUnitaire,
+          quantiteStock,
+          prixParUnite,
           provenance || null,
           source,
+          unites,
+          produitDose ? parUnite : null,
         ]
       );
       lignesTraitees.push(resultatReception.rows[0]);

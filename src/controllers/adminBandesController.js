@@ -399,11 +399,16 @@ async function detailBandeAdmin(req, res) {
       // Les réceptions de stock rattachées à cette bande (la vue les relie
       // par la date). Les poussins ont leur propre bloc, on les écarte.
       pool.query(
-        `SELECT id, poste, nom, unite, quantite, prix_unitaire, provenance,
-                date_reception, source
-           FROM receptions_ferme
-          WHERE bande_id = $1 AND origine = 'produit'
-          ORDER BY date_reception DESC`,
+        // La jointure rapporte ce qui a été COMPTÉ à la réception : « 4
+        // flacons de 1 000 doses » plutôt que « 4 000 doses », qui ne dit
+        // pas ce que l'ouvrier a eu entre les mains.
+        `SELECT r.id, r.poste, r.nom, r.unite, r.quantite, r.prix_unitaire,
+                r.provenance, r.date_reception, r.source,
+                sr.unites_recues, sr.doses_par_unite
+           FROM receptions_ferme r
+           LEFT JOIN stock_receptions sr ON sr.id = r.id
+          WHERE r.bande_id = $1 AND r.origine = 'produit'
+          ORDER BY r.date_reception DESC`,
         [bandeId]
       ),
       // Le journal nomme qui a corrigé : une trace anonyme ne sert à rien
@@ -548,6 +553,10 @@ async function detailBandeAdmin(req, res) {
         montant: r.prix_unitaire === null ? null : Number(r.quantite) * Number(r.prix_unitaire),
         provenance: r.provenance,
         date: r.date_reception,
+        // Pour les vaccins : le nombre de flacons et leur contenance.
+        // Nuls partout ailleurs, où l'unité achetée est l'unité stockée.
+        unitesRecues: r.unites_recues === null ? null : Number(r.unites_recues),
+        dosesParUnite: r.doses_par_unite === null ? null : Number(r.doses_par_unite),
         // Qui a payé : l'ouvrier saisit son prix, le propriétaire chiffre
         // la sienne plus tard depuis son écran Réceptions.
         payePar: r.source,
