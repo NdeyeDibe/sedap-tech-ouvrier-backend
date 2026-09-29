@@ -7,6 +7,8 @@ const {
   REQUETE_STOCK,
   LIBELLE_POSTE,
   REQUETE_PHOTOS,
+  originesDesPhotos,
+  avecOrigine,
   libelleJour,
 } = require("./proprietaireController");
 
@@ -750,6 +752,9 @@ async function photosSaisieAdmin(req, res) {
     }
 
     const saisie = rows[0];
+    const photos = saisie.photos ?? [];
+    const photosSante = saisie.photos_sante ?? [];
+    const connues = await originesDesPhotos([...photos, ...photosSante]);
 
     res.json({
       date: saisie.date_saisie,
@@ -760,8 +765,8 @@ async function photosSaisieAdmin(req, res) {
       // vocal a existé, mais n'a jamais quitté le téléphone de l'ouvrier.
       aVocal: saisie.a_vocal ?? false,
       vocalUrl: saisie.vocal_url ?? null,
-      photos: (saisie.photos ?? []).map((url, i) => ({ numero: i + 1, url })),
-      photosSante: saisie.photos_sante ?? [],
+      photos: avecOrigine(photos, connues),
+      photosSante: avecOrigine(photosSante, connues),
     });
   } catch (erreur) {
     console.error("Erreur photos de saisie (admin) :", erreur);

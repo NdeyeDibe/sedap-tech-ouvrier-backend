@@ -357,6 +357,38 @@ const REQUETE_PHOTOS = `
    WHERE sm.bande_id = $1 AND sm.date_saisie = $2
 `;
 
+/**
+ * Ce qu'on sait de la prise de vue des photos données (migration 025).
+ *
+ * Les saisies d'avant sept. 2026 n'ont pas de ligne : leurs photos
+ * ressortent sans date, et l'écran l'écrit plutôt que de laisser croire
+ * qu'elles ont été vérifiées.
+ */
+async function originesDesPhotos(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) return new Map();
+  try {
+    const { rows } = await pool.query(
+      "SELECT url, prise_le, origine FROM photos_saisies WHERE url = ANY($1::text[])",
+      [urls]
+    );
+    return new Map(rows.map((r) => [r.url, { priseLe: r.prise_le, origine: r.origine }]));
+  } catch (erreur) {
+    // Une photo sans date reste une photo : on l'affiche quand même.
+    console.error("Lecture des dates de prise de vue impossible :", erreur.message);
+    return new Map();
+  }
+}
+
+/** Décore une liste d'adresses avec leur date de prise de vue. */
+function avecOrigine(urls, connues) {
+  return (urls ?? []).map((url, i) => ({
+    numero: i + 1,
+    url,
+    priseLe: connues.get(url)?.priseLe ?? null,
+    origine: connues.get(url)?.origine ?? "inconnue",
+  }));
+}
+
 async function photosMortalite(req, res) {
   const { bandeId, date } = req.params;
 
@@ -371,6 +403,8 @@ async function photosMortalite(req, res) {
 
     const saisie = rows[0];
     const photos = saisie.photos ?? [];
+    const photosSante = saisie.photos_sante ?? [];
+    const connues = await originesDesPhotos([...photos, ...photosSante]);
 
     res.json({
       date: saisie.date_saisie,
@@ -382,8 +416,8 @@ async function photosMortalite(req, res) {
       // vocal a existé, mais n'a jamais quitté le téléphone de l'ouvrier.
       aVocal: saisie.a_vocal ?? false,
       vocalUrl: saisie.vocal_url ?? null,
-      photos: photos.map((url, i) => ({ numero: i + 1, url })),
-      photosSante: saisie.photos_sante ?? [],
+      photos: avecOrigine(photos, connues),
+      photosSante: avecOrigine(photosSante, connues),
     });
   } catch (erreur) {
     console.error("Erreur photos de mortalité :", erreur);
@@ -429,6 +463,9 @@ module.exports = {
   // pouvoir juger sur pièces avant de corriger une saisie), mais sans le
   // contrôle de propriété — SEDAP voit toutes les fermes.
   REQUETE_PHOTOS,
+  // Dates de prise de vue : les deux interfaces les affichent sous la photo.
+  originesDesPhotos,
+  avecOrigine,
   libelleJour,
   REQUETE_PROGRAMME,
   REQUETE_DEPENSES,

@@ -22,11 +22,56 @@ function dateSaisie(valeur) {
   return valeur;
 }
 
+// Les photos arrivent soit en simples adresses (saisies mises en file
+// d'attente avant la mise à jour de sept. 2026, qui partent au retour du
+// réseau), soit en { url, priseLe, origine } depuis l'application ouvrier
+// qui lit maintenant la date de prise de vue dans le fichier.
+//
+// On accepte les deux formes : une saisie en attente sur le téléphone d'un
+// ouvrier ne doit pas être perdue par une mise à jour du serveur.
+function normaliserPhotos(photos) {
+  if (!Array.isArray(photos)) return [];
+  return photos
+    .map((p) => {
+      if (typeof p === "string") return { url: p, priseLe: null, origine: "inconnue" };
+      if (!p || typeof p.url !== "string") return null;
+      const origine = ["exif", "fichier", "inconnue"].includes(p.origine) ? p.origine : "inconnue";
+      const prise = p.priseLe ? new Date(p.priseLe) : null;
+      return {
+        url: p.url,
+        priseLe: prise && !Number.isNaN(prise.getTime()) ? prise.toISOString() : null,
+        origine,
+      };
+    })
+    .filter(Boolean);
+}
+
+// Ce qu'on sait de chaque photo, à côté de la saisie (migration 025).
+// Ne lève jamais : une photo mal datée ne doit pas faire échouer la saisie
+// du jour, qui est ce qui compte vraiment pour l'ouvrier.
+async function enregistrerOrigines(bandeId, jour, photos) {
+  for (const photo of photos) {
+    try {
+      await pool.query(
+        `INSERT INTO photos_saisies (url, bande_id, date_saisie, origine, prise_le)
+         VALUES ($1, $2, coalesce($3::date, CURRENT_DATE), $4, $5)
+         ON CONFLICT (url) DO UPDATE
+            SET prise_le = coalesce(EXCLUDED.prise_le, photos_saisies.prise_le),
+                origine  = EXCLUDED.origine`,
+        [photo.url, bandeId, jour, photo.origine, photo.priseLe]
+      );
+    } catch (erreur) {
+      console.error("Enregistrement de l'origine d'une photo impossible :", erreur.message);
+    }
+  }
+}
+
 async function enregistrerMortalite(req, res) {
   const { bandeId } = req.params;
   const { mortalite, photos } = req.body;
   const jour = dateSaisie(req.body.dateSaisie);
-  const urlsPhotos = Array.isArray(photos) ? photos : [];
+  const recues = normaliserPhotos(photos);
+  const urlsPhotos = recues.map((p) => p.url);
 
   if (mortalite === undefined || mortalite < 0) {
     return res.status(400).json({ erreur: "La mortalité doit être un nombre positif ou nul." });
@@ -44,6 +89,7 @@ async function enregistrerMortalite(req, res) {
        RETURNING *`,
       [bandeId, mortalite, urlsPhotos, jour]
     );
+    await enregistrerOrigines(bandeId, jour, recues);
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
     console.error("Erreur saisie mortalité :", erreur);
@@ -59,7 +105,8 @@ async function enregistrerSante(req, res) {
   // qu'un vocal existait sans jamais pouvoir l'écouter.
   const { etat, aVocal, vocalUrl, photos } = req.body;
   const jour = dateSaisie(req.body.dateSaisie);
-  const urlsPhotos = Array.isArray(photos) ? photos : [];
+  const recues = normaliserPhotos(photos);
+  const urlsPhotos = recues.map((p) => p.url);
 
   if (!["bien", "anormal", "urgent"].includes(etat)) {
     return res.status(400).json({ erreur: "État invalide (bien, anormal ou urgent attendu)." });
@@ -80,6 +127,7 @@ async function enregistrerSante(req, res) {
        RETURNING *`,
       [bandeId, etat, aVocal || false, vocalUrl || null, urlsPhotos, jour]
     );
+    await enregistrerOrigines(bandeId, jour, recues);
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {
     console.error("Erreur saisie santé :", erreur);
