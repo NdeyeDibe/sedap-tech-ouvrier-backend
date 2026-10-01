@@ -33,6 +33,13 @@ const LIBELLE_POSTE = {
 const POIDS_SAC_KG = 50;
 const enSacs = (ligne) => ligne.origine === "produit" && ligne.poste === "aliment";
 
+// Même raison pour les vaccins : le stock est en doses, mais on achète des
+// flacons de 500 ou 1 000 doses. Sans cette conversion, le propriétaire
+// taperait le prix d'un flacon là où la base attend celui d'une dose, et la
+// dépense serait multipliée par mille.
+const dosesParFlacon = (ligne) =>
+  ligne.origine === "produit" && ligne.doses_par_unite ? Number(ligne.doses_par_unite) : null;
+
 async function poulaillerAutorise(poulaillerId, proprietaireId) {
   const { rows } = await pool.query(
     `SELECT pl.id, pl.nom
@@ -47,10 +54,16 @@ async function poulaillerAutorise(poulaillerId, proprietaireId) {
 function enveloppe(ligne) {
   const prixBase = ligne.prix_unitaire === null ? null : Number(ligne.prix_unitaire);
   const sacs = enSacs(ligne);
+  const doses = dosesParFlacon(ligne);
+
+  // Combien d'unités de stock dans ce que le propriétaire a acheté : 50 kg
+  // par sac, 1 000 doses par flacon, 1 partout ailleurs.
+  const parAchat = sacs ? POIDS_SAC_KG : (doses ?? 1);
+
   // Le montant ne change pas : seule l'unité d'affichage change.
   const montant = prixBase === null ? null : Number(ligne.quantite) * prixBase;
-  const quantite = sacs ? Number(ligne.quantite) / POIDS_SAC_KG : Number(ligne.quantite);
-  const prix = prixBase === null ? null : sacs ? prixBase * POIDS_SAC_KG : prixBase;
+  const quantite = Number(ligne.quantite) / parAchat;
+  const prix = prixBase === null ? null : prixBase * parAchat;
 
   return {
     origine: ligne.origine,
@@ -58,11 +71,15 @@ function enveloppe(ligne) {
     poste: ligne.poste,
     libelle: LIBELLE_POSTE[ligne.poste] ?? ligne.poste,
     nom: ligne.nom,
-    unite: sacs ? "sacs" : ligne.unite,
-    // Unité du prix saisi : « Fcfa / sac de 50 kg » pour l'aliment.
+    unite: sacs ? "sacs" : doses ? "flacons" : ligne.unite,
+    // Unité du prix saisi : « Fcfa / sac de 50 kg », « Fcfa / flacon de
+    // 1 000 doses ». C'est ce que le propriétaire a sous les yeux sur sa
+    // facture ; lui demander un prix à la dose serait absurde.
     unitePrix: sacs
       ? `sac de ${POIDS_SAC_KG} kg`
-      : ligne.origine === "poussins" ? "poussin" : ligne.unite,
+      : doses
+        ? `flacon de ${doses} doses`
+        : ligne.origine === "poussins" ? "poussin" : ligne.unite,
     quantite,
     prixUnitaire: prix,
     montant,
@@ -92,9 +109,13 @@ async function registreReceptions(req, res) {
     }
 
     const { rows } = await pool.query(
-      `SELECT r.*, b.numero AS bande_numero
+      // La jointure rapporte la contenance des flacons : le stock des
+      // vaccins est en doses, mais le propriétaire a payé des flacons.
+      `SELECT r.*, b.numero AS bande_numero, sr.doses_par_unite
          FROM receptions_ferme r
          LEFT JOIN bandes b ON b.id = r.bande_id
+         LEFT JOIN stock_receptions sr
+           ON sr.id = r.id AND r.origine = 'produit'
         WHERE r.poulailler_id = $1
           AND ($2::int IS NULL OR r.bande_id = $2)
         ORDER BY r.date_reception DESC`,
@@ -149,7 +170,11 @@ async function renseignerPrix(req, res) {
   const REQUETES = {
     produit: `UPDATE stock_receptions r
             SET prix_unitaire = $1::numeric
-                  / CASE WHEN sp.produit_id = 'aliment' THEN ${POIDS_SAC_KG} ELSE 1 END
+                  / CASE
+                      WHEN sp.produit_id = 'aliment' THEN ${POIDS_SAC_KG}
+                      WHEN r.doses_par_unite IS NOT NULL THEN r.doses_par_unite
+                      ELSE 1
+                    END
           FROM stock_produits sp, poulaillers pl, fermes f
           WHERE r.id = $2
             AND sp.id = r.stock_produit_id
@@ -158,7 +183,7 @@ async function renseignerPrix(req, res) {
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
           RETURNING r.id, sp.poulailler_id, sp.nom AS produit, sp.unite,
-                    (sp.produit_id = 'aliment') AS en_sacs,
+                    (sp.produit_id = 'aliment') AS en_sacs, r.doses_par_unite,
                     r.quantite_recue AS quantite, r.date_reception`,
     autre: `UPDATE stock_autres_produits r
             SET prix_unitaire = $1
@@ -204,20 +229,27 @@ async function renseignerPrix(req, res) {
       cibleId: Number(receptionId),
       poulaillerId: ligne.poulailler_id,
       bandeId: ligne.bande_id,
-      details: {
+      details: (() => {
+        // Le journal garde ce que le propriétaire a saisi, dans SON unité :
+        // « 4 flacons de 1 000 doses à 12 000 F » se relit, « 4 000 doses à
+        // 12 F » demande un calcul pour vérifier.
+        const doses = ligne.doses_par_unite ? Number(ligne.doses_par_unite) : null;
+        const parAchat = ligne.en_sacs ? POIDS_SAC_KG : (doses ?? 1);
+        return {
         origine,
         produit: ligne.produit,
-        quantite: ligne.en_sacs
-          ? Number(ligne.quantite) / POIDS_SAC_KG
-          : Number(ligne.quantite),
-        unite: ligne.en_sacs ? "sacs" : ligne.unite,
+        quantite: Number(ligne.quantite) / parAchat,
+        unite: ligne.en_sacs ? "sacs" : doses ? "flacons" : ligne.unite,
         prixUnitaire: Number(prixUnitaire),
         unitePrix: ligne.en_sacs
           ? `sac de ${POIDS_SAC_KG} kg`
-          : origine === "poussins" ? "poussin" : ligne.unite,
+          : doses
+            ? `flacon de ${doses} doses`
+            : origine === "poussins" ? "poussin" : ligne.unite,
         ...(ligne.provenance ? { provenance: ligne.provenance } : {}),
         dateReception: ligne.date_reception,
-      },
+        };
+      })(),
     });
 
     res.json({ id: Number(receptionId), origine, prixUnitaire: Number(prixUnitaire) });
