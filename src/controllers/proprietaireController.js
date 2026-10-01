@@ -121,11 +121,28 @@ const LIBELLE_POSTE = {
   poussins: 'Poussins',
 };
 
+// Les dépenses sont un TOTAL par poste : « Aliment, 7 450 kg reçus ». Sans
+// date, le propriétaire ne pouvait pas rattacher ce total à des livraisons
+// réelles (retour Ndeye, oct. 2026). On lui donne le nombre de réceptions et
+// la période qu'elles couvrent — le détail ligne par ligne reste à un clic,
+// dans l'écran Réceptions.
+//
+// Le calcul se fait ici plutôt que dans la vue depenses_bandes : deux autres
+// vues en dépendent, et les toucher pour trois colonnes d'affichage serait
+// cher payé.
 const REQUETE_DEPENSES = `
-  SELECT poste, quantite, cout
-    FROM depenses_bandes
-   WHERE bande_id = $1
-   ORDER BY cout DESC
+  SELECT d.poste, d.quantite, d.cout,
+         j.nombre, j.premiere, j.derniere
+    FROM depenses_bandes d
+    LEFT JOIN LATERAL (
+      SELECT count(*)              AS nombre,
+             min(r.date_reception) AS premiere,
+             max(r.date_reception) AS derniere
+        FROM receptions_ferme r
+       WHERE r.bande_id = d.bande_id AND r.poste = d.poste
+    ) j ON true
+   WHERE d.bande_id = $1
+   ORDER BY d.cout DESC
 `;
 
 const REQUETE_STOCK = `
@@ -272,6 +289,11 @@ async function detailPoulailler(req, res) {
           libelle: LIBELLE_POSTE[d.poste] ?? d.poste,
           quantite: Number(d.quantite),
           cout: Number(d.cout),
+          // Quand ces quantités sont arrivées : une seule date si tout est
+          // venu d'un coup, une période sinon.
+          nombreReceptions: Number(d.nombre ?? 0),
+          premiereReception: d.premiere ?? null,
+          derniereReception: d.derniere ?? null,
         })),
         total: depenses.rows.reduce((t, d) => t + Number(d.cout), 0),
       },
