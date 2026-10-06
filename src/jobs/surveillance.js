@@ -8,11 +8,17 @@ const { chargerToutesLesFermes, ouvrierDe } = require("../services/alertesFerme"
 //  1. Toutes les 15 minutes : annonce les réceptions de stock déclarées par
 //     l'ouvrier, puis recalcule les alertes de chaque propriétaire abonné aux
 //     notifications et envoie celles qui sont nouvelles.
-//  2. Une fois par jour : supprime les vocaux des bandes clôturées depuis
-//     plus d'un mois (les photos, elles, sont gardées pour entraîner l'IA).
+//
+// Une seconde tâche quotidienne effaçait les vocaux des bandes clôturées
+// depuis plus d'un mois. Elle a été retirée en octobre 2026 : SEDAP a
+// décidé de conserver ces enregistrements pour entraîner un modèle de
+// reconnaissance vocale en wolof, au même titre que les photos. Chaque
+// mois qui passait détruisait du corpus.
+//
+// Le stockage ne s'y oppose pas : les vocaux pèsent environ 2 Mo par
+// bande, contre 16 Go pour les photos de la même bande.
 
 const QUINZE_MINUTES = 15 * 60 * 1000;
-const UN_JOUR = 24 * 3600 * 1000;
 
 // Préférence de l'écran Profil qui gouverne chaque type d'alerte.
 // Les types absents (aliment, pesage, saisie) sont toujours envoyés.
@@ -263,65 +269,6 @@ async function envoyerNouvellesAlertesAdmins() {
   );
 }
 
-// ------------------------------------------------------------ vocaux
-
-// L'identifiant Cloudinary d'un fichier se lit dans son adresse :
-// .../video/upload/v1726000000/dossier/vocal-123.webm → dossier/vocal-123
-function identifiantCloudinary(url) {
-  const apres = url.split("/upload/")[1];
-  if (!apres) return null;
-  return apres.replace(/^v\d+\//, "").replace(/\.[^/.]+$/, "");
-}
-
-async function supprimerVieuxVocaux() {
-  const { CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET } = process.env;
-  if (!CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
-    console.warn("⚠️  Nettoyage des vocaux désactivé : clés Cloudinary absentes.");
-    return;
-  }
-
-  const cloudinary = require("cloudinary").v2;
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "yrupel1v",
-    api_key: CLOUDINARY_API_KEY,
-    api_secret: CLOUDINARY_API_SECRET,
-  });
-
-  const { rows } = await pool.query(
-    `SELECT ss.id, ss.vocal_url
-       FROM saisies_sante ss
-       JOIN bandes b ON b.id = ss.bande_id
-      WHERE ss.vocal_url IS NOT NULL
-        AND b.statut = 'terminee'
-        AND b.date_fin < now() - interval '1 month'`
-  );
-
-  let supprimes = 0;
-
-  for (const { id, vocal_url: url } of rows) {
-    const identifiant = identifiantCloudinary(url);
-    try {
-      if (identifiant) {
-        // Les fichiers audio sont rangés par Cloudinary sous « video ».
-        await cloudinary.uploader.destroy(identifiant, {
-          resource_type: "video",
-          invalidate: true,
-        });
-      }
-      // a_vocal reste vrai : l'historique montre qu'un vocal a existé.
-      await pool.query(
-        "UPDATE saisies_sante SET vocal_url = NULL WHERE id = $1",
-        [id]
-      );
-      supprimes += 1;
-    } catch (erreur) {
-      console.error(`Vocal ${id} non supprimé :`, erreur.message);
-    }
-  }
-
-  if (supprimes > 0) console.log(`🧹 ${supprimes} vocal(aux) supprimé(s).`);
-}
-
 // ------------------------------------------------------------ lancement
 
 // Une tâche qui plante ne doit ni arrêter le serveur, ni les autres tâches.
@@ -347,7 +294,6 @@ async function passageSurveillance() {
 
 function demarrerSurveillance() {
   repeter("surveillance", passageSurveillance, QUINZE_MINUTES, 30 * 1000);
-  repeter("nettoyage des vocaux", supprimerVieuxVocaux, UN_JOUR, 60 * 1000);
   console.log("⏱️  Surveillance automatique démarrée.");
 }
 
@@ -356,6 +302,4 @@ module.exports = {
   annoncerReceptions,
   envoyerNouvellesAlertes,
   envoyerNouvellesAlertesAdmins,
-  supprimerVieuxVocaux,
-  identifiantCloudinary,
 };
