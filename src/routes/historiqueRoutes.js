@@ -6,6 +6,7 @@ const {
   historiqueMortalite,
   historiqueAlimentation,
   historiqueProduitsUtilises,
+  historiqueJours,
 } = require("../controllers/historiqueController");
 
 router.use(verifierToken);
@@ -17,5 +18,6 @@ router.use(verifierProprietaireBande);
 router.get("/mortalite", historiqueMortalite);
 router.get("/alimentation", historiqueAlimentation);
 router.get("/produits-utilises", historiqueProduitsUtilises);
+router.get("/jours", historiqueJours);
 
 module.exports = router;

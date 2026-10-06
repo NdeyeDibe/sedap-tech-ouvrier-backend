@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { correctionLisible, ACTIONS_VISIBLES } = require("../utils/corrections");
+const { joursDeLaBande } = require("../services/joursSaisie");
 const {
   chargerFerme,
   alertesDeLaFerme,
@@ -215,7 +216,7 @@ async function detailPoulailler(req, res) {
     }
 
     const [saisies, programme, stock, depenses, corrections] = await Promise.all([
-      pool.query(REQUETE_SAISIES, [ligne.bande_id, 10]),
+      joursDeLaBande(ligne.bande_id),
       pool.query(REQUETE_PROGRAMME, [ligne.bande_id]),
       pool.query(REQUETE_STOCK, [ligne.poulailler_id]),
       pool.query(REQUETE_DEPENSES, [ligne.bande_id]),
@@ -260,15 +261,22 @@ async function detailPoulailler(req, res) {
         corrections: corrections.rows.map(correctionLisible),
       },
 
-      saisies: saisies.rows.map((s) => ({
-        date: s.date_saisie,
-        libelle: libelleJour(s.date_saisie),
-        morts: Number(s.mortalite),
-        photos: Number(s.nb_photos),
-        sacs: Number(s.sacs),
-        kg: Number(s.kg),
-        etat: s.etat ?? "bien",
-        aVocal: s.a_vocal ?? false,
+      // Les dix dernières JOURNÉES, non saisies comprises : c'est là que
+      // le propriétaire repère un oubli sans ouvrir l'historique complet.
+      nombreManquants: saisies.nombreManquants,
+      saisies: saisies.jours.slice(0, 10).map((j) => ({
+        date: j.date,
+        jour: j.jour,
+        libelle: libelleJour(j.date),
+        etatSaisie: j.etatSaisie,
+        manques: j.manques,
+        saisiLe: j.saisiLe,
+        morts: j.morts,
+        photos: j.photos,
+        sacs: j.sacs,
+        kg: j.kg,
+        etat: j.etat,
+        aVocal: j.aVocal,
       })),
 
       programme: programme.rows.map((p) => ({
@@ -336,8 +344,13 @@ async function bandeAutorisee(bandeId, proprietaireId) {
   return rows[0] ?? null;
 }
 
-// Toutes les saisies d'une bande, sans limite de nombre : l'écran les
-// regroupe par jour et replie au-delà d'un certain volume.
+// Toutes les JOURNÉES d'une bande, celles sans saisie comprises.
+//
+// Cette liste partait auparavant de la table des mortalités : un jour que
+// personne n'avait saisi n'avait pas de ligne, donc n'apparaissait pas.
+// Le propriétaire lisait J1, J3, J4 sans voir que J2 manquait. Elle part
+// maintenant du calendrier de la bande (services/joursSaisie.js), partagé
+// avec l'interface du responsable pour que les deux comptent pareil.
 async function historiqueSaisies(req, res) {
   const { bandeId } = req.params;
 
@@ -345,20 +358,25 @@ async function historiqueSaisies(req, res) {
     const bande = await bandeAutorisee(bandeId, req.utilisateur.id);
     if (!bande) return res.status(404).json({ erreur: "Bande introuvable." });
 
-    const { rows } = await pool.query(REQUETE_SAISIES, [bandeId, 500]);
+    const { jours, nombreManquants } = await joursDeLaBande(bandeId);
 
     res.json({
       bandeId: Number(bandeId),
       poulailler: bande.poulailler_nom,
-      saisies: rows.map((s) => ({
-        date: s.date_saisie,
-        libelle: libelleJour(s.date_saisie),
-        morts: Number(s.mortalite),
-        photos: Number(s.nb_photos),
-        sacs: Number(s.sacs),
-        kg: Number(s.kg),
-        etat: s.etat ?? "bien",
-        aVocal: s.a_vocal ?? false,
+      nombreManquants,
+      saisies: jours.map((j) => ({
+        date: j.date,
+        jour: j.jour,
+        libelle: libelleJour(j.date),
+        etatSaisie: j.etatSaisie,
+        manques: j.manques,
+        saisiLe: j.saisiLe,
+        morts: j.morts,
+        photos: j.photos,
+        sacs: j.sacs,
+        kg: j.kg,
+        etat: j.etat,
+        aVocal: j.aVocal,
       })),
     });
   } catch (erreur) {

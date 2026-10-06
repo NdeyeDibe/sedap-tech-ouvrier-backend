@@ -13,6 +13,7 @@
 // qu'il a saisi, pas à revoir ses clichés. Le propriétaire et l'admin,
 // eux, les ont déjà sur leurs interfaces.
 const pool = require("../db/pool");
+const { joursDeLaBande } = require("../services/joursSaisie");
 
 // Un sac d'aliment pèse 50 kg — même constante que partout ailleurs.
 const POIDS_SAC_KG = 50;
@@ -143,8 +144,23 @@ async function historiqueProduitsUtilises(req, res) {
   }
 }
 
+// Les journées de la bande, celles non saisies comprises. Le responsable
+// y voit ce qu'il a oublié — l'application ne pouvait jusqu'ici rien lui
+// en dire, puisqu'elle ne listait que ce qui existait.
+async function historiqueJours(req, res) {
+  const { bandeId } = req.params;
+  try {
+    const { jours, manquants, nombreManquants } = await joursDeLaBande(bandeId);
+    res.json({ lignes: jours, manquants, nombreManquants });
+  } catch (erreur) {
+    console.error("Erreur historique des journées :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 module.exports = {
   historiqueMortalite,
   historiqueAlimentation,
   historiqueProduitsUtilises,
+  historiqueJours,
 };
