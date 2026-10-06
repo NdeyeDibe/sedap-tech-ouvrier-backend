@@ -107,6 +107,21 @@ const CATALOGUE = {
     defaut: "18:00",
     niveau: "surveiller",
   },
+  // Ce réglage-ci s'affiche au bas du programme sanitaire (maquette 21),
+  // pas dans l'onglet des seuils : c'est là qu'on le cherche.
+  poids_min_reception_g: {
+    ecran: "programme",
+    groupe: "Réception",
+    libelle: "Poids minimal à la réception des poussins",
+    detail: "Contrôlé à la création de la bande par le responsable",
+    type: "entier",
+    defaut: 35,
+    min: 10,
+    max: 200,
+    prefixe: "≥",
+    unite: "g",
+  },
+
   pesage_jours_signalement: {
     groupe: "Saisies et pesage",
     libelle: "Pesage oublié signalé pendant",

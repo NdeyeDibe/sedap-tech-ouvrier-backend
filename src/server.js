@@ -7,6 +7,7 @@ const pool = require("./db/pool");
 const authRoutes = require("./routes/authRoutes");
 const bandeRoutes = require("./routes/bandeRoutes");
 const saisieRoutes = require("./routes/saisieRoutes");
+const historiqueRoutes = require("./routes/historiqueRoutes");
 const stockRoutes = require("./routes/stockRoutes");
 const suiviRoutes = require("./routes/suiviRoutes");
 const venteRoutes = require("./routes/venteRoutes");
@@ -35,6 +36,10 @@ app.get("/api/sante", async (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/bandes", bandeRoutes);
 app.use("/api/bandes/:bandeId/saisies", saisieRoutes);
+// Relecture des saisies passées par le responsable (mortalité,
+// alimentation, produits utilisés). Les ventes ont déjà leur liste sur
+// l'écran Vente, via /api/bandes/:bandeId/ventes.
+app.use("/api/bandes/:bandeId/historique", historiqueRoutes);
 app.use("/api/bandes/:bandeId", suiviRoutes);
 app.use("/api/bandes/:bandeId", venteRoutes);
 app.use("/api/stock", stockRoutes);

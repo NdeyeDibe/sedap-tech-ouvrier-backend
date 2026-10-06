@@ -51,7 +51,7 @@ function texteReception(r) {
   const paye =
     r.source === "proprietaire"
       ? "payé par vous — prix à renseigner"
-      : `payé par l'ouvrier${
+      : `payé par le responsable${
           r.prix_unitaire === null
             ? ""
             : ` · ${nombre(Number(r.quantite) * Number(r.prix_unitaire))} Fcfa`
