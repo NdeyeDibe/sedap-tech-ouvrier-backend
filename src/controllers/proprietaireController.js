@@ -73,28 +73,6 @@ async function tableauDeBord(req, res) {
 // cette fois — puis y ajoute ce que la carte n'affiche pas : réception,
 // saisies récentes, programme de vaccination, stock.
 
-const REQUETE_SAISIES = `
-  SELECT
-    sm.date_saisie,
-    sm.mortalite,
-    coalesce(array_length(sm.photos, 1), 0) AS nb_photos,
-    ss.etat,
-    ss.a_vocal,
-    coalesce((
-      SELECT sum(sa.sacs) FROM saisies_alimentation sa
-       WHERE sa.bande_id = $1 AND sa.date_saisie = sm.date_saisie
-    ), 0) AS sacs,
-    coalesce((
-      SELECT sum(sa.kg_supplementaires) FROM saisies_alimentation sa
-       WHERE sa.bande_id = $1 AND sa.date_saisie = sm.date_saisie
-    ), 0) AS kg
-  FROM saisies_mortalite sm
-  LEFT JOIN saisies_sante ss
-    ON ss.bande_id = sm.bande_id AND ss.date_saisie = sm.date_saisie
-  WHERE sm.bande_id = $1
-  ORDER BY sm.date_saisie DESC
-  LIMIT $2
-`;
 
 // Le programme sanitaire complet : ce qui était prévu, ce qui a été fait,
 // ce qui est en retard. La vue programme_bandes croise le programme de
@@ -498,7 +476,6 @@ module.exports = {
   // (section IX) dit que le détail d'une bande affiche « le même contenu
   // que le détail poulailler du propriétaire ». Les dupliquer, c'est se
   // garantir qu'un jour les deux écrans ne diront plus la même chose.
-  REQUETE_SAISIES,
   // Photos et vocal d'une journée : l'admin les affiche aussi (il doit
   // pouvoir juger sur pièces avant de corriger une saisie), mais sans le
   // contrôle de propriété — SEDAP voit toutes les fermes.

@@ -1,7 +1,7 @@
 const pool = require("../db/pool");
 const { parAdmin, differences } = require("../services/journal");
+const { joursDeLaBande } = require("../services/joursSaisie");
 const {
-  REQUETE_SAISIES,
   REQUETE_PROGRAMME,
   REQUETE_DEPENSES,
   REQUETE_STOCK,
@@ -378,7 +378,13 @@ async function detailBandeAdmin(req, res) {
     // Le reste du contenu vient des mêmes requêtes que l'écran du
     // propriétaire — c'est ce que demande le cahier admin (section IX).
     const [saisies, programme, depenses, stock, ventes, receptions, corrections, bilan] = await Promise.all([
-      pool.query(REQUETE_SAISIES, [bandeId, JOURS_HISTORIQUE]),
+      // Les JOURNÉES de la bande, celles sans saisie comprises. Avant,
+      // cette liste partait des mortalités enregistrées : un jour que
+      // personne n'avait saisi n'avait pas de ligne et disparaissait,
+      // alors que le responsable et le propriétaire le voient désormais.
+      // SEDAP ne pouvait donc pas constater l'oubli qu'elle est la seule
+      // à pouvoir corriger.
+      joursDeLaBande(bandeId),
       pool.query(REQUETE_PROGRAMME, [bandeId]),
       pool.query(REQUETE_DEPENSES, [bandeId]),
       pool.query(REQUETE_STOCK, [b.poulailler_id]),
@@ -490,16 +496,21 @@ async function detailBandeAdmin(req, res) {
 
       // Un jour se verrouille au changement de jour : passé cette limite,
       // l'ouvrier ne peut plus y toucher, seul SEDAP le peut.
-      saisies: saisies.rows.map((s) => {
-        const jour = jourISO(s.date_saisie);
+      nombreManquants: saisies.nombreManquants,
+      saisies: saisies.jours.slice(0, JOURS_HISTORIQUE).map((j) => {
+        const jour = jourISO(j.date);
         return {
-          date: s.date_saisie,
-          morts: Number(s.mortalite),
-          sacs: Number(s.sacs),
-          kg: Number(s.kg),
-          etat: s.etat ?? "bien",
-          aVocal: s.a_vocal ?? false,
-          photos: Number(s.nb_photos),
+          date: j.date,
+          jour: j.jour,
+          etatSaisie: j.etatSaisie,
+          manques: j.manques,
+          saisiLe: j.saisiLe,
+          morts: j.morts,
+          sacs: j.sacs,
+          kg: j.kg,
+          etat: j.etat,
+          aVocal: j.aVocal,
+          photos: j.photos,
           verrouillee: jour !== aujourdhui,
           corrigee: joursCorriges.has(jour),
         };
