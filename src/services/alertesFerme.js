@@ -1,5 +1,5 @@
 const pool = require("../db/pool");
-const { alertesBande, statutBande, kgDistribues } = require("../utils/alertes");
+const { alertesBande, statutBande, kgDistribues, niveauLePlusGrave } = require("../utils/alertes");
 const { seuilsActuels } = require("./seuils");
 
 // État courant des poulaillers d'un propriétaire — ou de toutes les fermes
@@ -124,7 +124,12 @@ const REQUETE_FERME = `
     ), 0) AS kg_hier,
 
     pe.prenom     AS ouvrier_prenom,
-    pe.telephone  AS ouvrier_telephone
+    pe.telephone  AS ouvrier_telephone,
+    -- Compte bloqué après 3 mauvais codes : le responsable ne peut plus
+    -- rien saisir du tout. C'est une alerte à part entière, pas un détail
+    -- technique — elle remonte au propriétaire et à SEDAP.
+    coalesce(o.compte_verrouille, false) AS ouvrier_verrouille,
+    o.verrouille_le AS ouvrier_verrouille_le
 
   FROM poulaillers pl
   JOIN fermes f ON f.id = pl.ferme_id
@@ -135,6 +140,7 @@ const REQUETE_FERME = `
     ON pe.poulailler_id = pl.id
    AND pe.role = 'responsable'
    AND pe.fin_fonction IS NULL
+  LEFT JOIN ouvriers o ON o.id = pe.ouvrier_id
   -- $3 n'est vrai que pour l'admin (chargerToutesLesFermes). Un paramètre
   -- explicite plutôt qu'un propriétaire NULL : un identifiant manquant par
   -- erreur côté propriétaire ne doit jamais ouvrir toutes les fermes.
@@ -191,7 +197,10 @@ function construireBande(ligne, retards = []) {
           confirme: false,
         }
       : null,
-    pesageManque: pesage ? { jour: pesage.jour_debut } : null,
+    // dateLimite : depuis quand le pesage est en retard. Sans elle,
+    // l'alerte ne pouvait pas dire au propriétaire si ça date d'hier ou
+    // de deux semaines.
+    pesageManque: pesage ? { jour: pesage.jour_debut, dateLimite: pesage.date_limite } : null,
     receptionsSansPrix: Number(ligne.receptions_sans_prix),
     poussinsSansPrix: ligne.poussins_sans_prix === true,
     sujetsSansPrix: Number(ligne.sujets_sans_prix ?? 0),
@@ -236,20 +245,48 @@ async function charger(parametres) {
   }
 
   return rows.map((ligne) => {
+    // Le compte verrouillé ne dépend pas de la bande : un responsable
+    // bloqué le reste même entre deux bandes, et c'est justement à ce
+    // moment-là qu'on risque de l'oublier. L'alerte est donc construite
+    // ici, à côté de celles de la bande, et pas dans alertesBande().
+    const alertesCompte = ligne.ouvrier_verrouille
+      ? [
+          {
+            type: "compte",
+            cle: "verrouille",
+            niveau: "urgent",
+            titre: "Compte verrouillé",
+            message: `${ligne.ouvrier_prenom ?? "Le responsable"} ne peut plus se connecter : 3 codes faux. Aucune saisie n'est possible tant que SEDAP n'a pas rouvert son compte.`,
+            // La vraie date du blocage quand on la connaît (colonne
+            // ajoutée en oct. 2026) ; sinon rien, plutôt qu'une
+            // ancienneté inventée sur les comptes bloqués avant.
+            depuis: ligne.ouvrier_verrouille_le
+              ? new Date(ligne.ouvrier_verrouille_le).toISOString().slice(0, 10)
+              : null,
+          },
+        ]
+      : [];
+
     // « niveau » et non « statut » : ligne.statut est déjà celui de la
     // bande (en_cours, en_vente).
     if (!ligne.bande_id) {
-      return { ...ligne, alertes: [], niveau: "ok", saisiesManquantes: [] };
+      return {
+        ...ligne,
+        alertes: alertesCompte,
+        niveau: alertesCompte.length > 0 ? "urgent" : "ok",
+        saisiesManquantes: [],
+      };
     }
 
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
+    const alertes = [...alertesCompte, ...alertesBande(bande)];
     return {
       ...ligne,
       // La bande reconstruite : l'écran Alertes de l'admin y lit le jour du
       // vaccin ou du pesage en retard, pour dire depuis quand ça dure.
       bande,
-      alertes: alertesBande(bande),
-      niveau: statutBande(bande),
+      alertes,
+      niveau: niveauLePlusGrave([statutBande(bande), ...alertes.map((a) => a.niveau)]),
       // Lu par l'admin pour son bloc « Saisies manquantes aujourd'hui ».
       saisiesManquantes: bande.saisiesManquantes,
     };

@@ -136,8 +136,16 @@ async function connexion(req, res) {
       const nouvellesTentatives = ouvrier.tentatives_echouees + 1;
       const doitVerrouiller = nouvellesTentatives >= TENTATIVES_MAX;
 
+      // verrouille_le : la date du blocage, pour que l'alerte envoyée au
+      // propriétaire et à SEDAP puisse dire depuis quand ça dure. On ne
+      // l'écrit qu'au moment du verrouillage, et on ne l'écrase pas si le
+      // compte était déjà bloqué.
       await pool.query(
-        "UPDATE ouvriers SET tentatives_echouees = $1, compte_verrouille = $2 WHERE id = $3",
+        `UPDATE ouvriers
+            SET tentatives_echouees = $1,
+                compte_verrouille = $2,
+                verrouille_le = CASE WHEN $2 AND verrouille_le IS NULL THEN now() ELSE verrouille_le END
+          WHERE id = $3`,
         [nouvellesTentatives, doitVerrouiller, ouvrier.id]
       );
 

@@ -58,7 +58,7 @@ function deverrouiller(type) {
       // au journal, et à ce qu'on répond à l'écran).
       const { rows } = await pool.query(
         `UPDATE ${compte.table} AS c
-            SET compte_verrouille = false, tentatives_echouees = 0
+            SET compte_verrouille = false, tentatives_echouees = 0, verrouille_le = NULL
            FROM ${compte.table} AS avant
           WHERE c.id = $1 AND avant.id = c.id
       RETURNING c.id, c.prenom, c.nom,
@@ -120,7 +120,8 @@ async function reinitialiserPinOuvrier(req, res) {
   try {
     const { rows } = await pool.query(
       `UPDATE ouvriers
-          SET pin_hash = NULL, tentatives_echouees = 0, compte_verrouille = false
+          SET pin_hash = NULL, tentatives_echouees = 0, compte_verrouille = false,
+              verrouille_le = NULL
         WHERE id = $1
         RETURNING id, prenom, nom, telephone`,
       [id]

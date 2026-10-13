@@ -641,6 +641,7 @@ async function reinitialiserPinClient(req, res) {
     const { rows } = await pool.query(
       `UPDATE proprietaires
           SET pin_hash = NULL, tentatives_echouees = 0, compte_verrouille = false,
+              verrouille_le = NULL,
               jeton_activation = $2, jeton_expire_le = now() + ($3 || ' days')::interval
         WHERE id = $1
         RETURNING id, prenom, nom, email, jeton_expire_le`,

@@ -17,6 +17,7 @@ const {
 const {
   corrigerBande,
   corrigerSaisie,
+  saisirJourneeOubliee,
   detailBandeAdmin,
   photosSaisieAdmin,
   detailSaisieAdmin,
@@ -160,6 +161,9 @@ router.get("/bandes/:id", detailBandeAdmin);
 router.patch("/bandes/:id", corrigerBande);
 // Rattrape une faute de frappe sur une journée déjà verrouillée.
 router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
+// POST = la journée n'existe pas encore (oubli) ; PATCH = elle existe et
+// on la corrige. Deux verbes, deux intentions, aucun risque de confondre.
+router.post("/bandes/:id/saisies/:date", saisirJourneeOubliee);
 // Les photos de mortalité et le vocal de santé d'une journée : SEDAP juge
 // sur pièces avant de corriger un chiffre.
 router.get("/bandes/:bandeId/saisies/:date/photos", photosSaisieAdmin);

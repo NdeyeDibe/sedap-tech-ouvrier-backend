@@ -775,6 +775,160 @@ const LIBELLES_SAISIE = {
   produits: "Produits utilisés",
 };
 
+/**
+ * POST /api/admin/bandes/:id/saisies/:date — saisir une journée OUBLIÉE.
+ *
+ * À ne pas confondre avec corrigerSaisie (PATCH), qui modifie une journée
+ * déjà saisie. Ici, il n'y a rien du tout ce jour-là.
+ *
+ * Pourquoi SEDAP saisit à la place du responsable : il arrive qu'il ne
+ * puisse pas le faire lui-même — téléphone cassé, compte verrouillé, ou
+ * journée simplement oubliée dont il signale les chiffres par téléphone.
+ * Sans ce chemin, le trou restait définitif : le bilan de fin de bande
+ * était faux, et personne ne pouvait plus le réparer (demande Mengué,
+ * oct. 2026).
+ *
+ * Trois protections, les mêmes que pour une correction :
+ *  - la date doit tomber DANS la bande, et jamais dans le futur ;
+ *  - la mortalité ajoutée ne peut pas faire passer l'effectif sous zéro ;
+ *  - le motif est obligatoire, et tout part au journal d'activité, que
+ *    le propriétaire lit. Une journée saisie par SEDAP ne se confond
+ *    jamais avec une journée saisie au poulailler.
+ *
+ * Les PHOTOS ne sont pas reprises : SEDAP ne les a pas. La journée est
+ * donc complète côté chiffres, et le restera sans photo — c'est assumé.
+ */
+async function saisirJourneeOubliee(req, res) {
+  const bandeId = Number(req.params.id);
+  const jour = String(req.params.date ?? "");
+
+  if (!Number.isInteger(bandeId)) {
+    return res.status(400).json({ erreur: "Identifiant de bande invalide." });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(jour)) {
+    return res.status(400).json({ erreur: "Date attendue au format AAAA-MM-JJ." });
+  }
+
+  const motif = texte(req.body.motif);
+  if (!motif) {
+    return res.status(400).json({ erreur: "Indiquez pourquoi SEDAP saisit cette journée." });
+  }
+
+  const mortalite = entier(req.body.mortalite);
+  if (mortalite === null || mortalite < 0) {
+    return res.status(400).json({ erreur: "Mortalité : un nombre positif ou nul est attendu." });
+  }
+
+  const etat = texte(req.body.etat);
+  if (!["bien", "anormal", "urgent"].includes(etat)) {
+    return res.status(400).json({ erreur: "État : « bien », « anormal » ou « urgent » attendu." });
+  }
+
+  const alimentation = Array.isArray(req.body.alimentation) ? req.body.alimentation : [];
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: bandes } = await client.query(
+      `SELECT id, date_debut::date AS debut,
+              least(coalesce(date_fin::date, current_date), current_date) AS fin
+         FROM bandes WHERE id = $1 FOR UPDATE`,
+      [bandeId]
+    );
+    const bande = bandes[0];
+    if (!bande) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Bande introuvable." });
+    }
+
+    const enISO = (d) => new Date(d).toISOString().slice(0, 10);
+    if (jour < enISO(bande.debut) || jour > enISO(bande.fin)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        erreur: `Cette date est hors de la bande (du ${enISO(bande.debut)} au ${enISO(bande.fin)}).`,
+      });
+    }
+
+    const { rows: deja } = await client.query(
+      "SELECT 1 FROM saisies_mortalite WHERE bande_id = $1 AND date_saisie = $2::date",
+      [bandeId, jour]
+    );
+    if (deja.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        erreur: "Cette journée est déjà saisie. Passez par la correction pour la modifier.",
+      });
+    }
+
+    const { rows: etats } = await client.query(
+      `SELECT effectif_initial(b.id) AS depart,
+              sujets_morts(b.id) AS morts,
+              sujets_vendus(b.id) AS vendus
+         FROM bandes b WHERE b.id = $1`,
+      [bandeId]
+    );
+    const e = etats[0];
+    const mortsApres = Number(e.morts) + mortalite;
+    if (Number(e.depart) - mortsApres - Number(e.vendus) < 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        erreur:
+          `Impossible : avec ${mortalite} morts ce jour-là, le total des morts ` +
+          `(${mortsApres}) et des vendus (${e.vendus}) dépasserait l'effectif de ` +
+          `départ (${e.depart}).`,
+      });
+    }
+
+    await client.query(
+      "INSERT INTO saisies_mortalite (bande_id, date_saisie, mortalite) VALUES ($1, $2::date, $3)",
+      [bandeId, jour, mortalite]
+    );
+    await client.query(
+      `INSERT INTO saisies_sante (bande_id, date_saisie, etat)
+       VALUES ($1, $2::date, $3)
+       ON CONFLICT (bande_id, date_saisie) DO UPDATE SET etat = EXCLUDED.etat`,
+      [bandeId, jour, etat]
+    );
+
+    // Même fonction que la correction : elle rend au stock puis déduit, et
+    // refuse de faire passer un stock sous zéro.
+    const aliments =
+      alimentation.length > 0
+        ? await corrigerAlimentation(client, bandeId, jour, alimentation)
+        : null;
+
+    await client.query("COMMIT");
+
+    parAdmin(req, {
+      action: "saisie_ajoutee",
+      cibleType: "saisie",
+      cibleId: bandeId,
+      bandeId,
+      details: {
+        motif,
+        date: jour,
+        champs: {
+          mortalite: { libelle: LIBELLES_SAISIE.mortalite, avant: "—", apres: mortalite },
+          etat: { libelle: LIBELLES_SAISIE.etat, avant: "—", apres: etat },
+          ...(aliments
+            ? { alimentation: { libelle: LIBELLES_SAISIE.alimentation, avant: "—", apres: aliments.apres } }
+            : {}),
+        },
+      },
+    });
+
+    res.status(201).json({ bandeId, date: jour, mortalite, etat });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    if (erreur.statut) return res.status(erreur.statut).json({ erreur: erreur.message });
+    console.error("Erreur saisie d'une journée oubliée :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
 // ------------------------------------- alimentation et produits du jour
 
 // Un sac d'aliment. Même valeur que l'application ouvrier (lib/stockMock).
@@ -1070,6 +1224,7 @@ async function photosSaisieAdmin(req, res) {
 module.exports = {
   corrigerBande,
   corrigerSaisie,
+  saisirJourneeOubliee,
   detailBandeAdmin,
   photosSaisieAdmin,
   detailSaisieAdmin,

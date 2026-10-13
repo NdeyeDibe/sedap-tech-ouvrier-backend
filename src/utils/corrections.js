@@ -15,6 +15,10 @@
 const ACTIONS_VISIBLES = [
   "bande_corrigee",
   "saisie_corrigee",
+  // Journée oubliée, saisie par SEDAP sur indication du responsable. Le
+  // propriétaire doit la voir comme les corrections : ces chiffres-là ne
+  // viennent pas du poulailler mais d'un appel téléphonique.
+  "saisie_ajoutee",
   "vente_corrigee",
   "vente_supprimee_admin",
   "reception_corrigee",
@@ -34,6 +38,10 @@ function surQuoi(ligne) {
     case "saisie_corrigee": {
       const jour = jourCourt(ligne.details?.date);
       return jour ? `Saisie du ${jour}` : "Saisie du jour";
+    }
+    case "saisie_ajoutee": {
+      const jour = jourCourt(ligne.details?.date);
+      return jour ? `Journée du ${jour} ajoutée` : "Journée ajoutée";
     }
     case "vente_corrigee":
       return "Vente";
