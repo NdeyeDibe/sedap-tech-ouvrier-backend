@@ -50,7 +50,13 @@ const {
   rapportMensuel,
   rapportAnnuel,
 } = require("../controllers/adminRapportsController");
-const { detailFerme, ajouterPoulailler } = require("../controllers/adminFermesController");
+const {
+  detailFerme,
+  ajouterPoulailler,
+  communes,
+  definirLocalisation,
+  rafraichirMeteo,
+} = require("../controllers/adminFermesController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -150,6 +156,12 @@ router.get("/fermes/:id", detailFerme);
 // Une ferme s'agrandit après la création du compte : on ajoute le bâtiment
 // ici plutôt que de refaire passer le client par la création.
 router.post("/fermes/:id/poulaillers", ajouterPoulailler);
+
+// Localisation d'une ferme et prévisions : ce qui rend possible l'alerte
+// chaleur. La liste des communes est en dur côté serveur (communes.js).
+router.get("/communes", communes);
+router.patch("/fermes/:id/localisation", definirLocalisation);
+router.post("/meteo/rafraichir", rafraichirMeteo);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.

@@ -129,7 +129,13 @@ const REQUETE_FERME = `
     -- rien saisir du tout. C'est une alerte à part entière, pas un détail
     -- technique — elle remonte au propriétaire et à SEDAP.
     coalesce(o.compte_verrouille, false) AS ouvrier_verrouille,
-    o.verrouille_le AS ouvrier_verrouille_le
+    o.verrouille_le AS ouvrier_verrouille_le,
+    -- Prévision de DEMAIN pour la commune de la ferme : l'alerte chaleur
+    -- sert à préparer la journée (eau fraîche, rideaux, densité), pas à
+    -- constater après coup.
+    (SELECT pm.tmax FROM previsions_meteo pm
+      WHERE pm.ferme_id = f.id AND pm.jour = current_date + 1) AS tmax_demain,
+    f.commune AS ferme_commune
 
   FROM poulaillers pl
   JOIN fermes f ON f.id = pl.ferme_id
@@ -221,6 +227,11 @@ async function chargerToutesLesFermes() {
 }
 
 async function charger(parametres) {
+  // parametres[2] vaut true pour la vue de SEDAP. Certaines alertes lui
+  // sont réservées (voir « pourAdmin » plus bas) : le propriétaire ne
+  // doit ni les voir, ni être notifié, ni trouver son poulailler en
+  // rouge sans savoir pourquoi.
+  const vueAdmin = parametres[2] === true;
   // Les seuils réglables (maquette 20) partent en paramètres : ils
   // changent sans redéploiement, la requête ne peut donc plus les figer à
   // la construction du module.
@@ -267,6 +278,44 @@ async function charger(parametres) {
         ]
       : [];
 
+    // Chaleur annoncée pour demain. Ne concerne que les bandes assez
+    // avancées : avant quinze jours, un poussin a encore besoin de
+    // chaleur, et l'alerte dirait le contraire de ce qu'il faut faire.
+    //
+    // POUR SEDAP SEULEMENT (pourAdmin). Décision Ndeye et Mengué, oct.
+    // 2026 : le conseil à donner dépend du poulailler — son orientation,
+    // ses rideaux, son point d'eau, la densité du jour. Un texte
+    // automatique envoyé au responsable serait forcément générique, et
+    // c'est précisément ce que les packs JAMM et JARIN promettent de ne
+    // pas être. SEDAP voit l'alerte et appelle l'éleveur.
+    //
+    // Le message est donc écrit pour SEDAP : des faits et une consigne
+    // d'action, pas des conseils d'élevage.
+    const jourBande = ligne.bande_id ? Number(ligne.age_jours ?? 0) : 0;
+    const chaleur =
+      vueAdmin &&
+      ligne.bande_id &&
+      ligne.tmax_demain !== null &&
+      ligne.tmax_demain !== undefined &&
+      Number(ligne.tmax_demain) >= seuils.chaleur_tmax &&
+      jourBande >= seuils.chaleur_age_min
+        ? [
+            {
+              type: "chaleur",
+              cle: "demain",
+              niveau: "urgent",
+              titre: "Forte chaleur demain",
+              pourAdmin: true,
+              message:
+                `${Math.round(Number(ligne.tmax_demain))} °C annoncés demain` +
+                `${ligne.ferme_commune ? ` à ${ligne.ferme_commune}` : ""}, ` +
+                `sur une bande de ${jourBande} jours. Appeler le responsable pour les consignes.`,
+              // Une prévision parle de demain : elle date d'aujourd'hui.
+              depuis: new Date().toISOString().slice(0, 10),
+            },
+          ]
+        : [];
+
     // « niveau » et non « statut » : ligne.statut est déjà celui de la
     // bande (en_cours, en_vente).
     if (!ligne.bande_id) {
@@ -279,7 +328,7 @@ async function charger(parametres) {
     }
 
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
-    const alertes = [...alertesCompte, ...alertesBande(bande)];
+    const alertes = [...alertesCompte, ...chaleur, ...alertesBande(bande)];
     return {
       ...ligne,
       // La bande reconstruite : l'écran Alertes de l'admin y lit le jour du
@@ -302,6 +351,9 @@ const ouvrierDe = (ligne) =>
 async function alertesDeLaFerme(proprietaireId) {
   const lignes = await chargerFerme(proprietaireId);
 
+  // Pas de filtre ici : les alertes réservées à SEDAP ne sont tout
+  // simplement pas construites pour cette vue (voir vueAdmin dans
+  // charger()). Un seul mécanisme, un seul endroit où se tromper.
   return lignes.flatMap((ligne) =>
     ligne.alertes.map((alerte) => ({
       ...alerte,

@@ -122,6 +122,39 @@ const CATALOGUE = {
     unite: "g",
   },
 
+  // ------------------------------------------------------- chaleur
+  //
+  // La prévision donne la température EXTÉRIEURE de la commune. Le seuil
+  // ne dit donc pas « le poulailler sera trop chaud », mais « la journée
+  // de demain est dangereuse pour une bande avancée ».
+  chaleur_tmax: {
+    groupe: "Chaleur",
+    libelle: "Température extérieure prévue",
+    detail: "Alerte la veille, d'après la prévision de la commune",
+    type: "entier",
+    defaut: 38,
+    min: 30,
+    max: 50,
+    prefixe: "≥",
+    unite: "°C",
+    niveau: "urgent",
+  },
+  // Un poussin de trois jours a BESOIN de 32 °C : lui envoyer une alerte
+  // chaleur n'aurait pas de sens. Le risque commence quand l'animal est
+  // emplumé et lourd, et qu'il ne peut plus évacuer sa chaleur.
+  chaleur_age_min: {
+    groupe: "Chaleur",
+    libelle: "Âge de la bande à partir duquel la chaleur alerte",
+    detail: "Avant cet âge, les sujets ont encore besoin de chaleur",
+    type: "entier",
+    defaut: 15,
+    min: 1,
+    max: 60,
+    prefixe: "≥",
+    unite: "jours",
+    niveau: "urgent",
+  },
+
   pesage_jours_signalement: {
     groupe: "Saisies et pesage",
     libelle: "Pesage oublié signalé pendant",

@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { alertesDeLaFerme } = require("../services/alertesFerme");
+const { rafraichirPrevisions } = require("../services/meteo");
 const { pushActif, notifierProprietaire, notifierAdmin } = require("../services/notificationsPush");
 const { chargerToutesLesFermes, ouvrierDe } = require("../services/alertesFerme");
 
@@ -292,8 +293,27 @@ async function passageSurveillance() {
   await envoyerNouvellesAlertesAdmins();
 }
 
+// Prévisions météo : une fois toutes les six heures, pas quinze minutes.
+// La prévision de demain ne change pas d'une minute à l'autre, et le
+// service est gratuit — on ne l'use pas pour rien. Quatre passages par
+// jour suffisent à rattraper une coupure réseau.
+const SIX_HEURES = 6 * 60 * 60 * 1000;
+
+async function passageMeteo() {
+  const rapport = await rafraichirPrevisions();
+  if (rapport.fermes === 0) return; // aucune ferme localisée, rien à dire
+  console.log(
+    `🌡️  Prévisions : ${rapport.reussies}/${rapport.fermes} fermes, ${rapport.jours} jours.` +
+      (rapport.echouees.length > 0
+        ? ` Échecs : ${rapport.echouees.map((e) => `${e.ferme} (${e.raison})`).join(", ")}`
+        : "")
+  );
+}
+
 function demarrerSurveillance() {
   repeter("surveillance", passageSurveillance, QUINZE_MINUTES, 30 * 1000);
+  // Décalé d'une minute : le démarrage du serveur a déjà fort à faire.
+  repeter("météo", passageMeteo, SIX_HEURES, 60 * 1000);
   console.log("⏱️  Surveillance automatique démarrée.");
 }
 

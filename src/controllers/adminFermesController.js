@@ -3,6 +3,8 @@ const { chargerFerme } = require("../services/alertesFerme");
 const { niveauLePlusGrave } = require("../utils/alertes");
 const { creerStockInitial } = require("../utils/stockInitial");
 const { parAdmin } = require("../services/journal");
+const { listerCommunes, trouverCommune } = require("../services/communes");
+const { rafraichirPrevisions } = require("../services/meteo");
 
 // Détail d'une ferme — cahier admin v1.1, section VIII (maquette 07).
 //
@@ -28,7 +30,7 @@ async function detailFerme(req, res) {
 
   try {
     const { rows: fermes } = await pool.query(
-      `SELECT f.id, f.nom, f.localite, f.cree_le,
+      `SELECT f.id, f.nom, f.localite, f.commune, f.cree_le,
               p.id AS proprietaire_id, p.prenom, p.nom AS proprietaire_nom,
               p.telephone, p.email, p.cree_le AS proprietaire_cree_le,
               p.pin_hash, p.compte_verrouille, p.suspendu_le
@@ -128,7 +130,9 @@ async function detailFerme(req, res) {
     const actifs = poulaillers.filter((p) => p.bande);
 
     res.json({
-      ferme: { id: f.id, nom: f.nom, localite: f.localite, creeLe: f.cree_le },
+      // `commune` est la commune de référence pour la météo, choisie
+      // dans une liste ; `localite` reste l'adresse écrite à la main.
+      ferme: { id: f.id, nom: f.nom, localite: f.localite, commune: f.commune, creeLe: f.cree_le },
       proprietaire: {
         id: f.proprietaire_id,
         prenom: f.prenom,
@@ -268,4 +272,75 @@ async function ajouterPoulailler(req, res) {
   }
 }
 
-module.exports = { detailFerme, ajouterPoulailler };
+// GET /api/admin/communes — la liste pour la liste déroulante.
+function communes(req, res) {
+  res.json({ communes: listerCommunes() });
+}
+
+/**
+ * PATCH /api/admin/fermes/:id/localisation
+ *
+ * Rattache une ferme à une commune, et en déduit ses coordonnées. C'est
+ * ce qui rend l'alerte chaleur possible : sans coordonnées, aucune
+ * prévision n'est récupérée pour cette ferme, et elle n'est jamais
+ * alertée. L'écran le dit.
+ */
+async function definirLocalisation(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ erreur: "Identifiant de ferme invalide." });
+  }
+
+  const commune = trouverCommune(req.body?.commune);
+  if (!commune) {
+    return res.status(400).json({ erreur: "Commune inconnue. Choisissez-la dans la liste." });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE fermes
+          SET commune = $2, latitude = $3, longitude = $4
+        WHERE id = $1
+        RETURNING id, nom, commune, latitude, longitude`,
+      [id, commune.nom, commune.latitude, commune.longitude]
+    );
+    if (rows.length === 0) return res.status(404).json({ erreur: "Ferme introuvable." });
+
+    parAdmin(req, {
+      action: "ferme_localisee",
+      cibleType: "ferme",
+      cibleId: id,
+      fermeId: id,
+      details: { commune: commune.nom, region: commune.region },
+    });
+
+    // La prévision est récupérée tout de suite : sans ça, l'alerte
+    // n'arriverait qu'au passage du job suivant, et SEDAP croirait que
+    // le réglage n'a pas marché.
+    let meteo = null;
+    try {
+      meteo = await rafraichirPrevisions();
+    } catch (erreur) {
+      console.error("Prévisions non récupérées après localisation :", erreur.message);
+    }
+
+    res.json({ ferme: rows[0], meteo });
+  } catch (erreur) {
+    console.error("Erreur localisation de la ferme :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+// POST /api/admin/meteo/rafraichir — relance la récupération à la main.
+// Sert surtout à vérifier, après un déploiement, que le service météo
+// répond bien depuis le serveur.
+async function rafraichirMeteo(req, res) {
+  try {
+    res.json(await rafraichirPrevisions());
+  } catch (erreur) {
+    console.error("Erreur rafraîchissement météo :", erreur);
+    res.status(502).json({ erreur: "Le service météo n'a pas répondu." });
+  }
+}
+
+module.exports = { detailFerme, ajouterPoulailler, communes, definirLocalisation, rafraichirMeteo };
