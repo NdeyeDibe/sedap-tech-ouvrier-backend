@@ -637,8 +637,18 @@ async function corrigerSaisie(req, res) {
   // stock, d'où deux fonctions dédiées plus bas.
   const alimentation = Array.isArray(req.body.alimentation) ? req.body.alimentation : undefined;
   const produits = Array.isArray(req.body.produits) ? req.body.produits : undefined;
+  // Produits qui n'avaient PAS été déclarés ce jour-là : le responsable
+  // s'en souvient après coup. corrigerProduits ne sait que modifier une
+  // ligne existante, d'où cette entrée séparée.
+  const produitsAjoutes = Array.isArray(req.body.produitsAjoutes) ? req.body.produitsAjoutes : undefined;
 
-  if (mortalite === undefined && etat === undefined && alimentation === undefined && produits === undefined) {
+  if (
+    mortalite === undefined &&
+    etat === undefined &&
+    alimentation === undefined &&
+    produits === undefined &&
+    produitsAjoutes === undefined
+  ) {
     return res.status(400).json({ erreur: "Rien à corriger." });
   }
   if (mortalite !== undefined && (mortalite === null || mortalite < 0)) {
@@ -714,6 +724,9 @@ async function corrigerSaisie(req, res) {
     const produitsChanges = produits
       ? await corrigerProduits(client, bandeId, jour, produits)
       : [];
+    const nouveauxProduits = produitsAjoutes
+      ? await ajouterProduits(client, bandeId, jour, produitsAjoutes)
+      : [];
 
     const diff = differences(
       { mortalite: ligne.mortalite, etat: ligne.etat },
@@ -727,8 +740,11 @@ async function corrigerSaisie(req, res) {
     if (aliments && aliments.avant !== aliments.apres) {
       diff.alimentation = { avant: aliments.avant, apres: aliments.apres };
     }
-    if (produitsChanges.length > 0) {
-      diff.produits = { avant: "—", apres: produitsChanges.join(" · ") };
+    if (produitsChanges.length > 0 || nouveauxProduits.length > 0) {
+      diff.produits = {
+        avant: "—",
+        apres: [...produitsChanges, ...nouveauxProduits.map((p) => `+ ${p}`)].join(" · "),
+      };
     }
 
     if (Object.keys(diff).length === 0) {
@@ -825,6 +841,9 @@ async function saisirJourneeOubliee(req, res) {
   }
 
   const alimentation = Array.isArray(req.body.alimentation) ? req.body.alimentation : [];
+  // Produits consommés ce jour-là (gaz, vitamines, vaccin, « Autre »…),
+  // choisis dans le stock du poulailler.
+  const produits = Array.isArray(req.body.produits) ? req.body.produits : [];
 
   const client = await pool.connect();
   try {
@@ -898,6 +917,9 @@ async function saisirJourneeOubliee(req, res) {
         ? await corrigerAlimentation(client, bandeId, jour, alimentation)
         : null;
 
+    const produitsAjoutes =
+      produits.length > 0 ? await ajouterProduits(client, bandeId, jour, produits) : [];
+
     await client.query("COMMIT");
 
     parAdmin(req, {
@@ -913,6 +935,9 @@ async function saisirJourneeOubliee(req, res) {
           etat: { libelle: LIBELLES_SAISIE.etat, avant: "—", apres: etat },
           ...(aliments
             ? { alimentation: { libelle: LIBELLES_SAISIE.alimentation, avant: "—", apres: aliments.apres } }
+            : {}),
+          ...(produitsAjoutes.length > 0
+            ? { produits: { libelle: LIBELLES_SAISIE.produits, avant: "—", apres: produitsAjoutes.join(" · ") } }
             : {}),
         },
       },
@@ -960,7 +985,7 @@ async function detailSaisieAdmin(req, res) {
   }
 
   try {
-    const [alimentation, produits] = await Promise.all([
+    const [alimentation, produits, stock] = await Promise.all([
       pool.query(
         `SELECT type_aliment, sacs, kg_supplementaires
            FROM saisies_alimentation
@@ -984,6 +1009,29 @@ async function detailSaisieAdmin(req, res) {
           ORDER BY pu.id`,
         [bandeId, date]
       ),
+      // Ce qu'il y a dans le magasin du poulailler, pour la liste
+      // déroulante « ajouter un produit » : SEDAP ne doit pas pouvoir
+      // déclarer la consommation d'un produit qui n'est pas là (demande
+      // Ndeye, oct. 2026). Les deux tables sont réunies ici — un produit
+      // du catalogue et un produit « Autre » se choisissent de la même
+      // façon dans la liste.
+      pool.query(
+        `SELECT 'catalogue' AS source, sp.produit_id, sp.variante_id, NULL::int AS autre_id,
+                sp.nom, sp.unite, sp.quantite
+           FROM stock_produits sp
+           JOIN bandes b ON b.poulailler_id = sp.poulailler_id
+          -- L'aliment est EXCLU : il a sa propre section, en sacs et en
+          -- kilos. Le proposer aussi dans cette liste ouvrirait deux
+          -- chemins vers le même stock, avec deux unités différentes.
+          WHERE b.id = $1 AND sp.quantite > 0 AND sp.produit_id <> 'aliment'
+         UNION ALL
+         SELECT 'autre', NULL, NULL, sap.id, sap.nom, '', sap.quantite
+           FROM stock_autres_produits sap
+           JOIN bandes b ON b.poulailler_id = sap.poulailler_id
+          WHERE b.id = $1 AND sap.quantite > 0
+          ORDER BY nom`,
+        [bandeId]
+      ),
     ]);
 
     res.json({
@@ -1005,6 +1053,17 @@ async function detailSaisieAdmin(req, res) {
         // Ce qui reste en stock aujourd'hui, hors cette ligne.
         stockRestant: Number(p.stock_restant ?? p.stock_restant_autre ?? 0),
         estAutre: p.nom === null,
+      })),
+      // « cle » : un identifiant stable pour la liste déroulante, qui
+      // vaut aussi bien pour un produit du catalogue que pour un « Autre ».
+      stockDisponible: stock.rows.map((l) => ({
+        cle: l.source === "autre" ? `autre:${l.autre_id}` : `${l.produit_id}:${l.variante_id}`,
+        libelle: l.nom,
+        unite: l.unite ?? "",
+        disponible: Number(l.quantite),
+        ...(l.source === "autre"
+          ? { estAutre: true, autreProduitId: l.autre_id }
+          : { produitId: l.produit_id, varianteId: l.variante_id }),
       })),
       aliments: Object.entries(ALIMENTS).map(([valeur, libelle]) => ({ valeur, libelle })),
     });
@@ -1110,6 +1169,74 @@ async function corrigerAlimentation(client, bandeId, jour, lignes) {
  * produit déclaré par erreur. Le stock suit l'écart, dans un sens comme
  * dans l'autre.
  */
+/**
+ * AJOUTE des lignes de produits consommés à une journée, et retire les
+ * quantités du stock du poulailler.
+ *
+ * corrigerProduits() ne sait que modifier une ligne existante. Or un
+ * responsable qui donne ses chiffres par téléphone cite des produits dont
+ * aucune ligne n'existe — et sur une journée oubliée, il n'y en a aucune
+ * (demande Ndeye, oct. 2026).
+ *
+ * Le même garde-fou que pour l'ouvrier : on refuse de consommer plus que
+ * ce qu'il y a en magasin. La liste déroulante côté admin ne propose déjà
+ * que du stock disponible, mais entre l'ouverture de la fenêtre et son
+ * enregistrement, une autre saisie a pu passer.
+ *
+ * Renvoie la liste des libellés ajoutés, pour le journal.
+ */
+async function ajouterProduits(client, bandeId, jour, lignes) {
+  const ajoutes = [];
+
+  const { rows: poulaillers } = await client.query(
+    "SELECT poulailler_id FROM bandes WHERE id = $1",
+    [bandeId]
+  );
+  const poulaillerId = poulaillers[0]?.poulailler_id;
+  if (!poulaillerId) throw { statut: 404, message: "Bande introuvable." };
+
+  for (const l of lignes) {
+    const quantite = Number(l?.quantite);
+    if (!Number.isFinite(quantite) || quantite <= 0) {
+      throw { statut: 400, message: "Produit : une quantité supérieure à zéro est attendue." };
+    }
+
+    const estAutre = Boolean(l?.estAutre);
+    const { rows } = estAutre
+      ? await client.query(
+          "SELECT id, nom, quantite, NULL AS unite FROM stock_autres_produits WHERE id = $1 AND poulailler_id = $2 FOR UPDATE",
+          [Number(l.autreProduitId), poulaillerId]
+        )
+      : await client.query(
+          "SELECT id, nom, quantite, unite FROM stock_produits WHERE poulailler_id = $1 AND produit_id = $2 AND variante_id = $3 FOR UPDATE",
+          [poulaillerId, String(l.produitId ?? ""), String(l.varianteId ?? "")]
+        );
+
+    const stock = rows[0];
+    if (!stock) throw { statut: 400, message: "Ce produit n'existe pas dans le stock de ce poulailler." };
+    if (Number(stock.quantite) < quantite) {
+      throw {
+        statut: 409,
+        message: `Impossible : il ne reste que ${Number(stock.quantite)} ${stock.unite ?? ""} de ${stock.nom} en stock.`.replace(/\s+/g, " "),
+      };
+    }
+
+    const table = estAutre ? "stock_autres_produits" : "stock_produits";
+    await client.query(`UPDATE ${table} SET quantite = quantite - $1 WHERE id = $2`, [quantite, stock.id]);
+
+    const colonne = estAutre ? "stock_autre_produit_id" : "stock_produit_id";
+    await client.query(
+      `INSERT INTO produits_utilises (bande_id, ${colonne}, quantite, date_saisie)
+       VALUES ($1, $2, $3, $4::date)`,
+      [bandeId, stock.id, quantite, jour]
+    );
+
+    ajoutes.push(`${stock.nom} ${quantite}${stock.unite ? " " + stock.unite : ""}`);
+  }
+
+  return ajoutes;
+}
+
 async function corrigerProduits(client, bandeId, jour, corrections) {
   const changements = [];
 
