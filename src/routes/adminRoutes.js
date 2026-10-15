@@ -8,7 +8,13 @@ const {
   modifierMoi,
   modifierMotDePasse,
 } = require("../controllers/adminAuthController");
-const { creerOuvrierResponsable } = require("../controllers/adminOuvriersController");
+const {
+  creerOuvrierResponsable,
+  listerOuvriers,
+  rattacherOuvrier,
+  retirerOuvrier,
+  supprimerOuvrier,
+} = require("../controllers/adminOuvriersController");
 const {
   deverrouillerOuvrier,
   deverrouillerProprietaire,
@@ -195,6 +201,13 @@ router.patch("/receptions/:id", corrigerReception);
 
 // ------------------------------------------------------ comptes bloqués
 // Trois mauvais PIN et le compte se verrouille : SEDAP le rouvre d'ici.
+// Tous les comptes responsables, rattachés ou non : sans cet écran, un
+// compte retiré de son poste devient introuvable alors que son numéro
+// reste pris (cas Tchernandjai, oct. 2026).
+router.get("/ouvriers", listerOuvriers);
+router.patch("/ouvriers/:id/rattacher", rattacherOuvrier);
+router.patch("/ouvriers/:id/retirer", retirerOuvrier);
+router.delete("/ouvriers/:id", supprimerOuvrier);
 router.patch("/ouvriers/:id/deverrouiller", deverrouillerOuvrier);
 router.patch("/proprietaires/:id/deverrouiller", deverrouillerProprietaire);
 
