@@ -62,6 +62,8 @@ const {
   communes,
   definirLocalisation,
   rafraichirMeteo,
+  packs,
+  definirAbonnement,
 } = require("../controllers/adminFermesController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
@@ -168,6 +170,11 @@ router.post("/fermes/:id/poulaillers", ajouterPoulailler);
 router.get("/communes", communes);
 router.patch("/fermes/:id/localisation", definirLocalisation);
 router.post("/meteo/rafraichir", rafraichirMeteo);
+
+// Abonnement : le pack souscrit et la date d'ouverture du compte, d'où
+// découlent les 4 mois gratuits puis la facturation.
+router.get("/packs", packs);
+router.patch("/fermes/:id/abonnement", definirAbonnement);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.

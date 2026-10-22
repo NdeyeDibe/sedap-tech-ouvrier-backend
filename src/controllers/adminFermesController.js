@@ -5,6 +5,14 @@ const { creerStockInitial } = require("../utils/stockInitial");
 const { parAdmin } = require("../services/journal");
 const { listerCommunes, trouverCommune } = require("../services/communes");
 const { rafraichirPrevisions } = require("../services/meteo");
+const {
+  PACKS,
+  trouverPack,
+  jourValide,
+  versJour,
+  ecartEnJours,
+  etatAbonnement,
+} = require("../services/abonnement");
 
 // Détail d'une ferme — cahier admin v1.1, section VIII (maquette 07).
 //
@@ -31,6 +39,7 @@ async function detailFerme(req, res) {
   try {
     const { rows: fermes } = await pool.query(
       `SELECT f.id, f.nom, f.localite, f.commune, f.cree_le,
+              f.pack, f.abonnement_debut,
               p.id AS proprietaire_id, p.prenom, p.nom AS proprietaire_nom,
               p.telephone, p.email, p.cree_le AS proprietaire_cree_le,
               p.pin_hash, p.compte_verrouille, p.suspendu_le
@@ -133,6 +142,9 @@ async function detailFerme(req, res) {
       // `commune` est la commune de référence pour la météo, choisie
       // dans une liste ; `localite` reste l'adresse écrite à la main.
       ferme: { id: f.id, nom: f.nom, localite: f.localite, commune: f.commune, creeLe: f.cree_le },
+      // Pack souscrit et période gratuite : calculés, jamais stockés
+      // (services/abonnement.js).
+      abonnement: etatAbonnement(f),
       proprietaire: {
         id: f.proprietaire_id,
         prenom: f.prenom,
@@ -331,6 +343,79 @@ async function definirLocalisation(req, res) {
   }
 }
 
+// GET /api/admin/packs — les trois packs, nom et promesse.
+//
+// Servis par le serveur plutôt qu'écrits en dur dans l'admin : le jour où
+// un pack change de nom, une seule source change (services/abonnement.js),
+// et la contrainte en base reste d'accord avec ce que l'écran propose.
+function packs(req, res) {
+  res.json({ packs: PACKS });
+}
+
+// PATCH /api/admin/fermes/:id/abonnement
+//
+// Les deux renseignements dont dépend toute la facturation : le pack
+// souscrit et la date d'ouverture du compte, qui fait partir les 4 mois
+// gratuits. On les enregistre ensemble parce que l'un sans l'autre ne
+// permet de rien facturer.
+async function definirAbonnement(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ erreur: "Identifiant de ferme invalide." });
+  }
+
+  // Les deux champs sont facultatifs séparément : SEDAP peut enregistrer
+  // la date le jour de l'ouverture et le pack à la signature.
+  const brutPack = req.body?.pack;
+  const brutDebut = req.body?.debut;
+
+  let pack = null;
+  if (brutPack !== null && brutPack !== undefined && brutPack !== "") {
+    const p = trouverPack(brutPack);
+    if (!p) return res.status(400).json({ erreur: "Pack inconnu. Choisissez XAM, JAMM ou JARIN." });
+    pack = p.code;
+  }
+
+  let debut = null;
+  if (brutDebut !== null && brutDebut !== undefined && brutDebut !== "") {
+    debut = jourValide(brutDebut);
+    if (!debut) return res.status(400).json({ erreur: "Date d'ouverture invalide." });
+
+    // Une date d'ouverture dans le futur ferait courir les 4 mois gratuits
+    // à partir d'un jour qui n'est pas arrivé : c'est une faute de frappe,
+    // pas une souscription à l'avance.
+    if (ecartEnJours(versJour(new Date()), debut) > 0) {
+      return res.status(400).json({
+        erreur: "La date d'ouverture ne peut pas être dans le futur.",
+      });
+    }
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE fermes
+          SET pack = $2, abonnement_debut = $3
+        WHERE id = $1
+        RETURNING id, nom, pack, abonnement_debut`,
+      [id, pack, debut]
+    );
+    if (rows.length === 0) return res.status(404).json({ erreur: "Ferme introuvable." });
+
+    parAdmin(req, {
+      action: "ferme_abonnement",
+      cibleType: "ferme",
+      cibleId: id,
+      fermeId: id,
+      details: { pack, debut },
+    });
+
+    res.json({ abonnement: etatAbonnement(rows[0]) });
+  } catch (erreur) {
+    console.error("Erreur abonnement de la ferme :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 // POST /api/admin/meteo/rafraichir — relance la récupération à la main.
 // Sert surtout à vérifier, après un déploiement, que le service météo
 // répond bien depuis le serveur.
@@ -343,4 +428,12 @@ async function rafraichirMeteo(req, res) {
   }
 }
 
-module.exports = { detailFerme, ajouterPoulailler, communes, definirLocalisation, rafraichirMeteo };
+module.exports = {
+  detailFerme,
+  ajouterPoulailler,
+  communes,
+  definirLocalisation,
+  rafraichirMeteo,
+  packs,
+  definirAbonnement,
+};

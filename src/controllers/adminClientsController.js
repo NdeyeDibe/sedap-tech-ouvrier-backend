@@ -196,8 +196,16 @@ async function creerClient(req, res) {
     );
     const proprietaire = crees[0];
 
+    // La date d'ouverture du compte est posée ici, le jour même : c'est
+    // elle qui fait partir les 4 mois gratuits. La laisser vide
+    // obligerait SEDAP à la ressaisir pour chaque nouveau client, et à
+    // s'en souvenir — ce qui finirait par ne plus être fait. Elle reste
+    // corrigeable depuis la fiche de la ferme. Le pack, lui, n'est pas
+    // deviné : c'est un choix commercial.
     const { rows: fermes } = await client.query(
-      "INSERT INTO fermes (proprietaire_id, nom, localite) VALUES ($1, $2, $3) RETURNING id, nom",
+      `INSERT INTO fermes (proprietaire_id, nom, localite, abonnement_debut)
+       VALUES ($1, $2, $3, current_date)
+       RETURNING id, nom`,
       [proprietaire.id, fermeNom, localite]
     );
     const ferme = fermes[0];
