@@ -65,6 +65,13 @@ const {
   packs,
   definirAbonnement,
 } = require("../controllers/adminFermesController");
+const {
+  listerFactures,
+  rattraperFactures,
+  modifierFacture,
+  enregistrerPaiement,
+  supprimerPaiement,
+} = require("../controllers/adminFacturationController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -175,6 +182,14 @@ router.post("/meteo/rafraichir", rafraichirMeteo);
 // découlent les 4 mois gratuits puis la facturation.
 router.get("/packs", packs);
 router.patch("/fermes/:id/abonnement", definirAbonnement);
+
+// Facturation : une facture par bande, émise à son ouverture, et les
+// encaissements saisis par SEDAP tant qu'aucun agrégateur n'est branché.
+router.get("/fermes/:id/factures", listerFactures);
+router.post("/fermes/:id/factures/rattrapage", rattraperFactures);
+router.patch("/factures/:id", modifierFacture);
+router.post("/factures/:id/paiements", enregistrerPaiement);
+router.delete("/paiements/:id", supprimerPaiement);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.

@@ -1,6 +1,7 @@
 const pool = require("../db/pool");
 const { obtenirPoulaillerOuvrier } = require("../utils/poulailler");
 const { getSujetsRestants } = require("./venteController");
+const { facturerOuverture } = require("../services/facturation");
 
 // Jour à partir duquel la vente peut s'ouvrir. Les premiers sujets atteignent
 // alors leur poids ; les autres suivront sur plusieurs jours.
@@ -63,6 +64,23 @@ async function creerBande(req, res) {
         provenance, String(souche).trim(), Number(poidsReceptionG), payePar, prixUnitairePoussin,
       ]
     );
+
+    // La facture de la bande, émise à l'ouverture (paiement d'avance).
+    //
+    // Hors de la réponse et hors de toute transaction, volontairement : si
+    // la facturation échoue, le responsable a quand même SA bande. Ses
+    // poussins sont déjà dans le poulailler — lui refuser l'ouverture
+    // ferait perdre à SEDAP toutes les saisies de la bande, pour un
+    // problème de comptabilité qui ne le concerne pas. Ce qui n'est pas
+    // facturé ici est rattrapé depuis l'admin (facturerBandesOubliees).
+    try {
+      await facturerOuverture(pool, resultat.rows[0].id);
+    } catch (erreurFacture) {
+      console.error(
+        `Facture non émise à l'ouverture de la bande ${resultat.rows[0].id} :`,
+        erreurFacture.message
+      );
+    }
 
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {

@@ -5,9 +5,9 @@
 // réintroduire « Suivi / Sérénité / Rentabilité » comme noms : la fiche
 // en donnait deux par pack et personne ne savait plus lequel était le bon.
 //
-// Ce fichier ne calcule pas encore de facture. Il répond à la seule
-// question que l'admin se pose aujourd'hui : cette ferme est-elle encore
-// dans ses 4 mois gratuits, et jusqu'à quand ?
+// Ce fichier répond à deux questions, et c'est le seul endroit où elles
+// se décident : cette ferme est-elle encore dans ses 4 mois gratuits, et
+// combien coûte la bande qu'elle ouvre aujourd'hui ?
 
 const PACKS = [
   {
@@ -139,9 +139,98 @@ function etatAbonnement({ pack, abonnement_debut: debutBrut } = {}) {
   return etat;
 }
 
+// ------------------------------------------------------- grille tarifaire
+//
+// Fiche d'offre v2, « 4. Les tarifs par bande ». Une bande se facture
+// d'après le nombre de sujets qu'elle démarre et le pack de la ferme.
+//
+// JARIN se lit sur deux colonnes : les 10 premières bandes facturées
+// comprennent la caméra solaire ; à partir de la 11e, elle appartient à
+// l'éleveur et le prix baisse de 15 000 F.
+//
+// `null` ne veut pas dire « gratuit » : il veut dire que la grille ne
+// répond pas, et personne n'invente un prix à sa place.
+//  - au-delà de 12 000 sujets, l'offre dit « sur devis » ;
+//  - les cases vides de la grille (JAMM sous 500 sujets, JARIN sous
+//    1 500) ne sont pas commercialisées — « jusqu'à 500 sujets, XAM est
+//    le seul pack proposé ». Si ça arrive quand même, l'admin fixe le
+//    montant à la main plutôt que de facturer un chiffre inventé.
+const BANDES_AVEC_CAMERA = 10;
+
+const TRANCHES = [
+  { max: 500, libelle: "jusqu'à 500 sujets", xam: 5000, jamm: null, jarinAvec: null, jarinApres: null },
+  { max: 1500, libelle: "501 à 1 500", xam: 10000, jamm: 15000, jarinAvec: null, jarinApres: null },
+  { max: 3000, libelle: "1 501 à 3 000", xam: 15000, jamm: 22500, jarinAvec: 57500, jarinApres: 42500 },
+  { max: 7000, libelle: "3 001 à 7 000", xam: 20000, jamm: 30000, jarinAvec: 65000, jarinApres: 50000 },
+  { max: 12000, libelle: "7 001 à 12 000", xam: 25000, jamm: 37500, jarinAvec: 72500, jarinApres: 57500 },
+  { max: Infinity, libelle: "plus de 12 000", xam: null, jamm: null, jarinAvec: null, jarinApres: null },
+];
+
+/**
+ * Ce que coûte une bande.
+ *
+ * @param pack     code du pack de la ferme
+ * @param effectif sujets vivants au démarrage (reçus moins morts à
+ *                 l'arrivée) : c'est ce que la ferme élève réellement,
+ *                 et ce que l'application affiche partout comme effectif.
+ * @param rang     combien de bandes cette ferme a déjà fait facturer,
+ *                 plus un. Ne sert qu'à JARIN, pour la caméra.
+ */
+function tarifPourBande({ pack, effectif, rang = 1 } = {}) {
+  const p = trouverPack(pack);
+  const sujets = Number(effectif);
+
+  const resultat = {
+    pack: p?.code ?? null,
+    effectif: Number.isFinite(sujets) ? sujets : null,
+    rang,
+    tranche: null,
+    montant: null,
+    // Pourquoi il n'y a pas de montant, quand il n'y en a pas. L'admin
+    // affiche ce motif tel quel : « sur devis » et « hors grille » ne se
+    // traitent pas de la même façon.
+    motif: null,
+    cameraComprise: false,
+  };
+
+  if (!p) {
+    resultat.motif = "pack non renseigné";
+    return resultat;
+  }
+  if (!Number.isFinite(sujets) || sujets <= 0) {
+    resultat.motif = "effectif inconnu";
+    return resultat;
+  }
+
+  const tranche = TRANCHES.find((t) => sujets <= t.max);
+  resultat.tranche = tranche.libelle;
+
+  if (tranche.max === Infinity) {
+    resultat.motif = "sur devis";
+    return resultat;
+  }
+
+  if (p.code === "jarin") {
+    resultat.cameraComprise = rang <= BANDES_AVEC_CAMERA;
+    resultat.montant = resultat.cameraComprise ? tranche.jarinAvec : tranche.jarinApres;
+  } else {
+    resultat.montant = tranche[p.code];
+  }
+
+  if (resultat.montant == null) {
+    resultat.cameraComprise = false;
+    resultat.motif = `le pack ${p.nom} n'est pas proposé pour cette taille de bande`;
+  }
+
+  return resultat;
+}
+
 module.exports = {
   PACKS,
   CODES,
+  TRANCHES,
+  BANDES_AVEC_CAMERA,
+  tarifPourBande,
   MOIS_GRATUITS,
   DERNIER_JOUR_OFFRE_LANCEMENT,
   trouverPack,
