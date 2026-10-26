@@ -21,21 +21,21 @@ async function creerBande(req, res) {
   const prixUnitairePoussin = parOuvrier ? Number(req.body.prixUnitairePoussin) : null;
   const provenance = String(req.body.provenance ?? "").trim() || null;
 
-  // Tous les champs sont obligatoires ; seuls provenance et prix reviennent
-  // au propriétaire quand c'est lui qui a payé.
+  // Provenance et souche sont devenues facultatives (demande Ndeye et
+  // Mengué, 26 oct. 2026) : au moment de la réception, le responsable ne
+  // les connaît pas toujours, et les exiger le poussait à choisir
+  // n'importe quelle valeur de la liste pour pouvoir avancer — une
+  // donnée fausse est pire qu'une donnée vide. Elles se complètent
+  // ensuite depuis la correction de bande, côté admin.
   if (
     poussinsCommandes == null || poussinsCommandes === "" ||
     !poussinsRecus ||
     mortsALArrivee == null || mortsALArrivee === "" ||
-    !String(souche ?? "").trim() ||
     !(Number(poidsReceptionG) > 0)
   ) {
     return res.status(400).json({
-      erreur: "Commandés, reçus, morts à l'arrivée, souche et poids sont obligatoires.",
+      erreur: "Commandés, reçus, morts à l'arrivée et poids sont obligatoires.",
     });
-  }
-  if (parOuvrier && !provenance) {
-    return res.status(400).json({ erreur: "La provenance est obligatoire." });
   }
   if (parOuvrier && !(prixUnitairePoussin > 0)) {
     return res.status(400).json({ erreur: "Le prix d'un poussin est obligatoire." });
@@ -45,6 +45,36 @@ async function creerBande(req, res) {
     const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
     if (!poulaillerId) {
       return res.status(404).json({ erreur: "Aucun poulailler associé à ce compte." });
+    }
+
+    // Plus de poussins que le bâtiment n'en tient : presque toujours une
+    // faute de frappe (20 000 pour 2 000), parfois un vrai dépassement.
+    // On ne tranche pas à la place du responsable — c'est lui qui a les
+    // poussins devant les yeux — mais on ne le laisse pas passer sans le
+    // voir : il confirme, et SEDAP est alertée sur la fiche de la ferme.
+    //
+    // Refuser sèchement serait pire : si c'est la capacité enregistrée
+    // qui est fausse, le responsable se retrouverait bloqué avec ses
+    // poussins livrés, et toutes les saisies de la bande seraient
+    // perdues pour SEDAP.
+    const { rows: poulaillers } = await pool.query(
+      "SELECT nom, capacite FROM poulaillers WHERE id = $1",
+      [poulaillerId]
+    );
+    const capacite = poulaillers[0]?.capacite ?? null;
+    if (
+      capacite &&
+      Number(poussinsRecus) > Number(capacite) &&
+      req.body.depassementConfirme !== true
+    ) {
+      return res.status(409).json({
+        code: "capacite_depassee",
+        capacite: Number(capacite),
+        recus: Number(poussinsRecus),
+        erreur:
+          `Tu as saisi ${Number(poussinsRecus)} poussins reçus, mais ce poulailler est ` +
+          `enregistré pour ${Number(capacite)} sujets. Vérifie le nombre.`,
+      });
     }
 
     const resultatNumero = await pool.query(
@@ -61,7 +91,11 @@ async function creerBande(req, res) {
        RETURNING *`,
       [
         poulaillerId, numero, poussinsCommandes, poussinsRecus, mortsALArrivee,
-        provenance, String(souche).trim(), Number(poidsReceptionG), payePar, prixUnitairePoussin,
+        // Vide devient null, jamais la chaîne vide : « pas renseigné » et
+        // « renseigné avec rien » doivent se distinguer dans les écrans
+        // de correction comme dans les exports.
+        provenance, String(souche ?? "").trim() || null,
+        Number(poidsReceptionG), payePar, prixUnitairePoussin,
       ]
     );
 

@@ -29,6 +29,7 @@ const REQUETE_FERME = `
     f.nom                AS ferme_nom,
     pl.id                AS poulailler_id,
     pl.nom               AS poulailler_nom,
+    pl.capacite          AS poulailler_capacite,
     b.id                 AS bande_id,
     b.numero             AS bande_numero,
     b.statut,
@@ -316,6 +317,36 @@ async function charger(parametres) {
           ]
         : [];
 
+    // Plus de poussins reçus que le bâtiment n'en tient.
+    //
+    // POUR SEDAP SEULEMENT. Le responsable a déjà confirmé le chiffre au
+    // démarrage (bandeController) : le lui répéter tous les jours ne
+    // servirait à rien. En revanche SEDAP doit le savoir, parce que
+    // c'est l'un ou l'autre — une faute de frappe qui va fausser la
+    // facture de cette bande, ou une capacité enregistrée trop basse
+    // qu'il faut corriger. Les deux se règlent par un appel.
+    const capacite = Number(ligne.poulailler_capacite ?? 0);
+    const recus = Number(ligne.poussins_recus ?? 0);
+    const surcharge =
+      vueAdmin && ligne.bande_id && capacite > 0 && recus > capacite
+        ? [
+            {
+              type: "capacite",
+              cle: "depassee",
+              niveau: "surveiller",
+              titre: "Effectif au-dessus de la capacité",
+              pourAdmin: true,
+              message:
+                `${recus} poussins reçus pour un poulailler enregistré à ${capacite} sujets. ` +
+                `Vérifier avec le responsable : faute de frappe, ou capacité à corriger — ` +
+                `la facture de cette bande est calculée sur l'effectif saisi.`,
+              depuis: ligne.date_debut
+                ? new Date(ligne.date_debut).toISOString().slice(0, 10)
+                : null,
+            },
+          ]
+        : [];
+
     // « niveau » et non « statut » : ligne.statut est déjà celui de la
     // bande (en_cours, en_vente).
     if (!ligne.bande_id) {
@@ -328,7 +359,7 @@ async function charger(parametres) {
     }
 
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
-    const alertes = [...alertesCompte, ...chaleur, ...alertesBande(bande)];
+    const alertes = [...alertesCompte, ...chaleur, ...surcharge, ...alertesBande(bande)];
     return {
       ...ligne,
       // La bande reconstruite : l'écran Alertes de l'admin y lit le jour du
