@@ -58,9 +58,26 @@ async function creerBande(req, res) {
     // poussins livrés, et toutes les saisies de la bande seraient
     // perdues pour SEDAP.
     const { rows: poulaillers } = await pool.query(
-      "SELECT nom, capacite FROM poulaillers WHERE id = $1",
+      "SELECT nom, capacite, pack FROM poulaillers WHERE id = $1",
       [poulaillerId]
     );
+
+    // Pas d'abonnement, pas de service (décision Ndeye et Mengué, 27 oct.
+    // 2026). Le pack est choisi par SEDAP à la création du poulailler ;
+    // s'il manque, c'est un poulailler que personne n'a vendu, et ouvrir
+    // une bande dessus reviendrait à offrir le suivi sans le savoir.
+    //
+    // Le message vise le responsable, qui n'y est pour rien : il doit
+    // comprendre qu'il faut appeler, pas qu'il a mal saisi.
+    if (!poulaillers[0]?.pack) {
+      return res.status(409).json({
+        code: "poulailler_sans_abonnement",
+        erreur:
+          "Ce poulailler n'a pas d'abonnement. Préviens le propriétaire ou SEDAP " +
+          "avant de démarrer la bande.",
+      });
+    }
+
     const capacite = poulaillers[0]?.capacite ?? null;
     if (
       capacite &&

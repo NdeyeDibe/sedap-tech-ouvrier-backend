@@ -182,7 +182,7 @@ router.post("/meteo/rafraichir", rafraichirMeteo);
 // Abonnement : le pack souscrit et la date d'ouverture du compte, d'où
 // découlent les 4 mois gratuits puis la facturation.
 router.get("/packs", packs);
-router.patch("/fermes/:id/abonnement", definirAbonnement);
+router.patch("/poulaillers/:id/abonnement", definirAbonnement);
 
 // Facturation : une facture par bande, émise à son ouverture, et les
 // encaissements saisis par SEDAP tant qu'aucun agrégateur n'est branché.

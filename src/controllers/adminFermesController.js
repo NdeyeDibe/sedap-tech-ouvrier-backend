@@ -56,7 +56,7 @@ async function detailFerme(req, res) {
       // Ce que chargerFerme ne donne pas : capacité, nom complet du
       // responsable, et date de la dernière saisie de chaque poulailler.
       pool.query(
-        `SELECT pl.id, pl.capacite,
+        `SELECT pl.id, pl.capacite, pl.pack, pl.abonnement_debut,
                 o.id AS ouvrier_id, o.prenom AS ouvrier_prenom, o.nom AS ouvrier_nom,
                 o.telephone AS ouvrier_telephone, (o.pin_hash IS NOT NULL) AS ouvrier_pin_cree,
                 o.compte_verrouille AS ouvrier_verrouille,
@@ -89,6 +89,12 @@ async function detailFerme(req, res) {
           id: l.poulailler_id,
           nom: l.poulailler_nom ?? `Poulailler ${l.poulailler_id}`,
           capacite: c.capacite ?? null,
+          // L'abonnement vit sur le poulailler depuis la migration 032 :
+          // un propriétaire peut n'en abonner qu'une partie.
+          abonnement: etatAbonnement({
+            pack: c.pack,
+            abonnement_debut: c.abonnement_debut,
+          }),
           responsable: c.ouvrier_id
             ? {
                 id: c.ouvrier_id,
@@ -142,9 +148,6 @@ async function detailFerme(req, res) {
       // `commune` est la commune de référence pour la météo, choisie
       // dans une liste ; `localite` reste l'adresse écrite à la main.
       ferme: { id: f.id, nom: f.nom, localite: f.localite, commune: f.commune, creeLe: f.cree_le },
-      // Pack souscrit et période gratuite : calculés, jamais stockés
-      // (services/abonnement.js).
-      abonnement: etatAbonnement(f),
       proprietaire: {
         id: f.proprietaire_id,
         prenom: f.prenom,
@@ -211,6 +214,18 @@ async function ajouterPoulailler(req, res) {
   }
 
   const nomDemande = String(req.body.nom ?? "").trim();
+
+  // Le pack est obligatoire dès la création : un poulailler sans
+  // abonnement ne peut pas démarrer de bande (bandeController), donc le
+  // créer sans pack ne produirait qu'un bâtiment inutilisable dont
+  // personne ne comprendrait le blocage trois semaines plus tard.
+  const pack = trouverPack(req.body.pack);
+  if (!pack) {
+    return res.status(400).json({
+      erreur: "Choisissez le pack souscrit pour ce poulailler : XAM, JAMM ou JARIN.",
+    });
+  }
+
   const brut = req.body.capacite;
   const capacite = brut === null || brut === undefined || brut === "" ? null : Number(brut);
 
@@ -247,10 +262,10 @@ async function ajouterPoulailler(req, res) {
     await client.query("BEGIN");
 
     const { rows } = await client.query(
-      `INSERT INTO poulaillers (ferme_id, nom, capacite)
-       VALUES ($1, $2, $3)
-       RETURNING id, nom, capacite, cree_le`,
-      [fermeId, nom, capacite]
+      `INSERT INTO poulaillers (ferme_id, nom, capacite, pack, abonnement_debut)
+       VALUES ($1, $2, $3, $4, current_date)
+       RETURNING id, nom, capacite, pack, abonnement_debut, cree_le`,
+      [fermeId, nom, capacite, pack.code]
     );
     const poulailler = rows[0];
 
@@ -264,7 +279,7 @@ async function ajouterPoulailler(req, res) {
       cibleId: poulailler.id,
       fermeId,
       poulaillerId: poulailler.id,
-      details: { nom, capacite },
+      details: { nom, capacite, pack: pack.code },
     });
 
     res.status(201).json({
@@ -272,6 +287,8 @@ async function ajouterPoulailler(req, res) {
         id: poulailler.id,
         nom: poulailler.nom,
         capacite: poulailler.capacite,
+        pack: poulailler.pack,
+        abonnementDebut: poulailler.abonnement_debut,
         creeLe: poulailler.cree_le,
       },
     });
@@ -361,7 +378,7 @@ function packs(req, res) {
 async function definirAbonnement(req, res) {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
-    return res.status(400).json({ erreur: "Identifiant de ferme invalide." });
+    return res.status(400).json({ erreur: "Identifiant de poulailler invalide." });
   }
 
   // Les deux champs sont facultatifs séparément : SEDAP peut enregistrer
@@ -393,19 +410,20 @@ async function definirAbonnement(req, res) {
 
   try {
     const { rows } = await pool.query(
-      `UPDATE fermes
+      `UPDATE poulaillers
           SET pack = $2, abonnement_debut = $3
         WHERE id = $1
-        RETURNING id, nom, pack, abonnement_debut`,
+        RETURNING id, nom, ferme_id, pack, abonnement_debut`,
       [id, pack, debut]
     );
-    if (rows.length === 0) return res.status(404).json({ erreur: "Ferme introuvable." });
+    if (rows.length === 0) return res.status(404).json({ erreur: "Poulailler introuvable." });
 
     parAdmin(req, {
-      action: "ferme_abonnement",
-      cibleType: "ferme",
+      action: "poulailler_abonnement",
+      cibleType: "poulailler",
       cibleId: id,
-      fermeId: id,
+      fermeId: rows[0].ferme_id,
+      poulaillerId: id,
       details: { pack, debut },
     });
 

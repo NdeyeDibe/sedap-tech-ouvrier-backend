@@ -32,9 +32,13 @@ function gratuitAuJour(ferme, jour) {
  * @param db   un client dans une transaction, ou le pool
  */
 async function facturerOuverture(db, bandeId) {
+  // L'abonnement se lit sur le POULAILLER depuis la migration 032 : un
+  // propriétaire peut n'abonner qu'une partie de ses bâtiments, et à des
+  // packs différents.
   const { rows } = await db.query(
     `SELECT b.id, b.date_debut, b.poussins_recus, b.morts_a_larrivee,
-            f.id AS ferme_id, f.pack, f.abonnement_debut
+            pl.id AS poulailler_id, pl.pack, pl.abonnement_debut,
+            f.id AS ferme_id
        FROM bandes b
        JOIN poulaillers pl ON pl.id = b.poulailler_id
        JOIN fermes f ON f.id = pl.ferme_id
@@ -55,11 +59,18 @@ async function facturerOuverture(db, bandeId) {
   );
   if (dejaFacturee[0]) return null;
 
+  // Le rang compte les factures de CE POULAILLER, pas de la ferme : la
+  // caméra JARIN est installée dans un bâtiment précis, et c'est sur ses
+  // dix premières bandes à lui qu'elle se paie.
+  //
   // Le rang ne compte que les factures qui tiennent : une facture annulée
-  // ne doit pas faire avancer le compteur de la caméra JARIN.
+  // ne doit pas faire avancer le compteur.
   const { rows: compte } = await db.query(
-    "SELECT count(*)::int AS n FROM factures WHERE ferme_id = $1 AND annulee_le IS NULL",
-    [b.ferme_id]
+    `SELECT count(*)::int AS n
+       FROM factures fa
+       JOIN bandes bb ON bb.id = fa.bande_id
+      WHERE bb.poulailler_id = $1 AND fa.annulee_le IS NULL`,
+    [b.poulailler_id]
   );
   const rang = compte[0].n + 1;
 
@@ -164,10 +175,9 @@ async function facturesDeLaFerme(fermeId) {
  */
 async function bandesSansFacture(fermeId) {
   const { rows } = await pool.query(
-    `SELECT b.date_debut, f.pack, f.abonnement_debut
+    `SELECT b.date_debut, pl.pack, pl.abonnement_debut
        FROM bandes b
        JOIN poulaillers pl ON pl.id = b.poulailler_id
-       JOIN fermes f ON f.id = pl.ferme_id
        LEFT JOIN factures fa ON fa.bande_id = b.id
       WHERE pl.ferme_id = $1 AND fa.id IS NULL`,
     [fermeId]

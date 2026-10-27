@@ -4,6 +4,7 @@ const { parAdmin } = require("../services/journal");
 const { creerStockInitial } = require("../utils/stockInitial");
 const { envoyer } = require("../services/email");
 const { activationProprietaire } = require("../services/emailModeles");
+const { trouverPack } = require("../services/abonnement");
 
 // Clients — cahier admin, section VII.
 //
@@ -173,11 +174,19 @@ async function creerClient(req, res) {
     capacite: p?.capacite === null || p?.capacite === undefined || p?.capacite === ""
       ? null
       : Number(p.capacite),
+    // Le pack se choisit poulailler par poulailler : un même client peut
+    // prendre JARIN sur son grand bâtiment et XAM sur le petit.
+    pack: trouverPack(p?.pack),
   }));
   for (const l of lignes) {
     if (l.capacite !== null && (!Number.isInteger(l.capacite) || l.capacite <= 0)) {
       return res.status(400).json({
         erreur: `Capacité invalide pour ${l.nom} : un nombre de sujets supérieur à 0 est attendu.`,
+      });
+    }
+    if (!l.pack) {
+      return res.status(400).json({
+        erreur: `Choisissez le pack souscrit pour ${l.nom} : XAM, JAMM ou JARIN.`,
       });
     }
   }
@@ -213,8 +222,10 @@ async function creerClient(req, res) {
     const poulaillersCrees = [];
     for (const l of lignes) {
       const { rows } = await client.query(
-        "INSERT INTO poulaillers (ferme_id, nom, capacite) VALUES ($1, $2, $3) RETURNING id, nom, capacite",
-        [ferme.id, l.nom, l.capacite]
+        `INSERT INTO poulaillers (ferme_id, nom, capacite, pack, abonnement_debut)
+         VALUES ($1, $2, $3, $4, current_date)
+         RETURNING id, nom, capacite, pack`,
+        [ferme.id, l.nom, l.capacite, l.pack.code]
       );
       // Chaque poulailler neuf reçoit son catalogue de stock, sinon
       // l'ouvrier ne pourrait rien déclarer à sa première réception.
