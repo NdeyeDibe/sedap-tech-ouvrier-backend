@@ -6,16 +6,55 @@ const {
   alertesDeLaFerme,
   ouvrierDe,
 } = require("../services/alertesFerme");
+const { etatPoulailler } = require("../services/verrou");
 
 // Les requêtes d'état (effectifs, saisies du jour, stock) et le calcul des
 // alertes vivent dans services/alertesFerme.js : la surveillance qui envoie
 // les notifications s'en sert aussi, et doit dire exactement la même chose.
 
+/**
+ * Ce que le propriétaire a besoin de savoir de sa facture, et rien de plus.
+ *
+ * On ne lui renvoie ni le détail des encaissements, ni le motif interne
+ * d'un délai accordé : ce sont des informations de gestion SEDAP. Il voit
+ * ce qu'il doit, pour quelle bande, jusqu'à quand, et où il en est.
+ */
+function resumerPaiement(etat) {
+  if (!etat || etat.etape === "a_jour" || etat.etape === "a_fixer") {
+    return { etape: "a_jour" };
+  }
+  return {
+    etape: etat.etape,
+    montant: etat.facture?.montant ?? null,
+    reste: etat.reste,
+    resteTotal: etat.resteTotal ?? etat.reste,
+    bandeNumero: etat.facture?.bandeNumero ?? null,
+    echeance: etat.echeance,
+    verrouilleLe: etat.verrouilleLe,
+    delaiAccorde: etat.delaiAccorde,
+  };
+}
+
 async function tableauDeBord(req, res) {
   try {
     const lignes = await chargerFerme(req.utilisateur.id);
 
+    // L'état de paiement de chaque poulailler. Le propriétaire doit voir
+    // sa facture et son échéance AVANT que le verrou ne tombe : une
+    // suspension qui arrive sans prévenir serait vécue comme une panne,
+    // et c'est SEDAP qu'on appellerait.
+    //
+    // Poulailler par poulailler, jamais pour le compte entier : celui qui
+    // a payé trois de ses quatre poulaillers continue de suivre ces
+    // trois-là normalement.
+    const paiements = new Map(
+      await Promise.all(
+        lignes.map(async (l) => [l.poulailler_id, await etatPoulailler(l.poulailler_id)])
+      )
+    );
+
     const poulaillers = lignes.map((ligne) => {
+      const paiement = resumerPaiement(paiements.get(ligne.poulailler_id));
       if (!ligne.bande_id) {
         return {
           id: ligne.poulailler_id,
@@ -23,6 +62,7 @@ async function tableauDeBord(req, res) {
           bandeActive: null,
           alertes: [],
           statut: "ok",
+          paiement,
         };
       }
 
@@ -30,6 +70,7 @@ async function tableauDeBord(req, res) {
         id: ligne.poulailler_id,
         nom: ligne.poulailler_nom,
         ouvrier: ouvrierDe(ligne),
+        paiement,
         bandeActive: {
           id: ligne.bande_id,
           numero: ligne.bande_numero,
@@ -172,6 +213,21 @@ async function detailPoulailler(req, res) {
     // On ne distingue pas les deux, pour ne rien révéler d'une autre ferme.
     if (rows.length === 0) {
       return res.status(404).json({ erreur: "Poulailler introuvable." });
+    }
+
+    // Le verrou de paiement se pose ici, pas seulement dans l'écran :
+    // masquer un lien n'empêche personne d'ouvrir l'adresse directement.
+    //
+    // APRÈS le contrôle d'appartenance, jamais avant : répondre « 423
+    // verrouillé » sur un poulailler qui n'est pas le sien reviendrait à
+    // dire à n'importe qui quelles fermes sont en retard de paiement.
+    const verrou = await etatPoulailler(Number(poulaillerId));
+    if (verrou.etape === "verrouille") {
+      return res.status(423).json({
+        code: "poulailler_verrouille",
+        erreur: "Le suivi de ce poulailler est suspendu jusqu'au règlement de sa facture.",
+        paiement: resumerPaiement(verrou),
+      });
     }
 
     const ligne = rows[0];
