@@ -71,6 +71,7 @@ const {
   modifierFacture,
   enregistrerPaiement,
   supprimerPaiement,
+  accorderDelai,
 } = require("../controllers/adminFacturationController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
@@ -190,6 +191,8 @@ router.post("/fermes/:id/factures/rattrapage", rattraperFactures);
 router.patch("/factures/:id", modifierFacture);
 router.post("/factures/:id/paiements", enregistrerPaiement);
 router.delete("/paiements/:id", supprimerPaiement);
+// Soupape du verrou automatique : repousser l'échéance sans encaisser.
+router.patch("/factures/:id/delai", accorderDelai);
 
 // ------------------------------------------------ ouvriers responsables
 // Remplace l'ancienne route publique /api/auth/pre-inscrire.

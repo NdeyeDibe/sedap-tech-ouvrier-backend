@@ -12,6 +12,7 @@
 
 const pool = require("../db/pool");
 const { tarifPourBande, etatAbonnement, ecartEnJours, versJour } = require("./abonnement");
+const { etatVerrou } = require("./verrou");
 
 /** Cette ferme était-elle encore gratuite ce jour-là ? */
 function gratuitAuJour(ferme, jour) {
@@ -192,7 +193,17 @@ function presenter(f) {
   else if (paye > 0) statut = "partielle";
   else statut = "impayee";
 
+  // Où en est le verrou de paiement : l'admin doit voir « verrouillé »
+  // ou « avertissement » sur la ligne, pas seulement « impayée ».
+  const verrou = etatVerrou(f);
+
   return {
+    verrou: {
+      etape: verrou.etape,
+      echeance: verrou.echeance,
+      verrouilleLe: verrou.verrouilleLe,
+      delaiAccorde: verrou.delaiAccorde,
+    },
     id: f.id,
     bandeId: f.bande_id,
     bandeNumero: f.bande_numero,

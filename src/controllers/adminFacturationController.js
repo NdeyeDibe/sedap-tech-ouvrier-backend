@@ -139,8 +139,13 @@ async function modifierFacture(req, res) {
       return res.json({ ok: true });
     }
 
+    // montant_fixe_le fait partir le délai de paiement : avant, l'éleveur
+    // n'avait reçu aucune somme à régler (services/verrou.js).
     await pool.query(
-      "UPDATE factures SET montant = $2, motif = NULL WHERE id = $1",
+      `UPDATE factures
+          SET montant = $2, motif = NULL,
+              montant_fixe_le = COALESCE(montant_fixe_le, now())
+        WHERE id = $1`,
       [id, montant]
     );
     parAdmin(req, {
@@ -251,8 +256,62 @@ async function supprimerPaiement(req, res) {
   }
 }
 
+// PATCH /api/admin/factures/:id/delai
+//
+// La soupape du verrou automatique. Un bon client en déplacement, un
+// paiement en espèces remis à un commercial, une panne de l'agrégateur :
+// sans ce bouton, SEDAP devrait enregistrer un faux encaissement pour
+// débloquer quelqu'un, et le registre des paiements mentirait.
+//
+// Une date, pas un déblocage définitif : le délai se périme tout seul.
+async function accorderDelai(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ erreur: "Identifiant de facture invalide." });
+  }
+
+  const jusquau = String(req.body?.jusquau ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(jusquau)) {
+    return res.status(400).json({ erreur: "Date de délai invalide." });
+  }
+  // Fin de journée : un délai « jusqu'au 3 » couvre le 3 en entier.
+  const limite = new Date(`${jusquau}T23:59:59`);
+  if (Number.isNaN(limite.getTime()) || limite.getTime() <= Date.now()) {
+    return res.status(400).json({ erreur: "Le délai doit se terminer dans le futur." });
+  }
+
+  const motif = String(req.body?.motif ?? "").trim() || null;
+
+  try {
+    const { rows } = await pool.query(
+      `UPDATE factures
+          SET delai_jusquau = $2, delai_motif = $3, delai_par = $4
+        WHERE id = $1 AND annulee_le IS NULL
+        RETURNING ferme_id`,
+      [id, limite.toISOString(), motif, req.utilisateur.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ erreur: "Facture introuvable ou annulée." });
+    }
+
+    parAdmin(req, {
+      action: "delai_accorde",
+      cibleType: "facture",
+      cibleId: id,
+      fermeId: rows[0].ferme_id,
+      details: { jusquau, motif },
+    });
+
+    res.json({ ok: true });
+  } catch (erreur) {
+    console.error("Erreur délai de paiement :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
 module.exports = {
   MOYENS,
+  accorderDelai,
   listerFactures,
   rattraperFactures,
   modifierFacture,

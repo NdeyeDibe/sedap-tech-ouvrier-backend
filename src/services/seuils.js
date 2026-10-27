@@ -155,6 +155,36 @@ const CATALOGUE = {
     niveau: "urgent",
   },
 
+  // ------------------------------------------------------- paiement
+  //
+  // Décision Mengué, 26 oct. 2026 : la facture d'une bande est émise à son
+  // ouverture, le propriétaire a un délai pour payer, puis un second délai
+  // après avertissement avant que le poulailler ne se verrouille.
+  //
+  // Réglables parce que ce sont des choix commerciaux, pas des constantes
+  // techniques : 24 h un dimanche de Tabaski n'est pas 24 h un mardi, et
+  // c'est à SEDAP d'ajuster sans attendre un déploiement.
+  paiement_delai_heures: {
+    groupe: "Paiement",
+    libelle: "Délai pour payer une facture de bande",
+    detail: "À partir de l'émission, ou du jour où SEDAP fixe un montant sur devis",
+    type: "entier",
+    defaut: 24,
+    min: 1,
+    max: 720,
+    unite: "heures",
+  },
+  paiement_delai_avertissement_heures: {
+    groupe: "Paiement",
+    libelle: "Délai supplémentaire après l'avertissement",
+    detail: "Au bout duquel le poulailler se verrouille",
+    type: "entier",
+    defaut: 24,
+    min: 1,
+    max: 720,
+    unite: "heures",
+  },
+
   pesage_jours_signalement: {
     groupe: "Saisies et pesage",
     libelle: "Pesage oublié signalé pendant",

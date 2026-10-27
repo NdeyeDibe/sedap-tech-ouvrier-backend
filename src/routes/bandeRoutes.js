@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const verifierToken = require("../middleware/auth");
+const exigerPoulaillerOuvert = require("../middleware/exigerPoulaillerOuvert");
 const {
   creerBande,
   listerBandes,
@@ -10,6 +11,9 @@ const {
 } = require("../controllers/bandeController");
 
 router.use(verifierToken);
+// Barrage de paiement : aucune écriture tant que la facture de la
+// bande en cours est verrouillée (services/verrou.js).
+router.use(exigerPoulaillerOuvert);
 
 router.post("/", creerBande);
 router.get("/", listerBandes);
