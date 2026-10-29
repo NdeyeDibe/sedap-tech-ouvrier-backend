@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { parProprietaire } = require("../services/journal");
+const { CATALOGUE_STOCK_INITIAL } = require("../utils/stockInitial");
 
 // Réceptions de stock vues par le propriétaire.
 //
@@ -40,6 +41,38 @@ const enSacs = (ligne) => ligne.origine === "produit" && ligne.poste === "alimen
 const dosesParFlacon = (ligne) =>
   ligne.origine === "produit" && ligne.doses_par_unite ? Number(ligne.doses_par_unite) : null;
 
+// Les noms de conditionnement qui existent sous PLUSIEURS familles.
+// Dans le catalogue, « Pot 1 kg » et « Sachet 100 g » sont à la fois des
+// vitamines et de l'antistress : affichés seuls, le propriétaire ne peut
+// pas savoir ce qu'il chiffre (signalé par Ndeye, 29 oct. 2026).
+//
+// Calculé depuis le catalogue plutôt qu'écrit en dur : le jour où SEDAP
+// ajoute un « Pot 1 kg » sous une troisième famille, ou renomme une
+// variante, la règle suit toute seule.
+const NOMS_AMBIGUS = new Set(
+  Object.entries(
+    CATALOGUE_STOCK_INITIAL.reduce((parNom, p) => {
+      (parNom[p.nom] ??= new Set()).add(p.produitId);
+      return parNom;
+    }, {})
+  )
+    .filter(([, familles]) => familles.size > 1)
+    .map(([nom]) => nom)
+);
+
+/**
+ * Le nom tel que le propriétaire doit le lire.
+ *
+ * La famille n'est ajoutée que lorsqu'elle est nécessaire : « Croissance »
+ * ou « Balle de riz » se suffisent, et les préfixer de « Aliment · » ou
+ * « Litière · » ne ferait qu'allonger une ligne déjà serrée sur un
+ * téléphone.
+ */
+function nomAffiche(ligne, libelle) {
+  if (ligne.origine !== "produit") return ligne.nom;
+  return NOMS_AMBIGUS.has(ligne.nom) ? `${libelle} · ${ligne.nom}` : ligne.nom;
+}
+
 async function poulaillerAutorise(poulaillerId, proprietaireId) {
   const { rows } = await pool.query(
     `SELECT pl.id, pl.nom
@@ -65,12 +98,17 @@ function enveloppe(ligne) {
   const quantite = Number(ligne.quantite) / parAchat;
   const prix = prixBase === null ? null : prixBase * parAchat;
 
+  const libelle = LIBELLE_POSTE[ligne.poste] ?? ligne.poste;
+
   return {
     origine: ligne.origine,
     id: ligne.id,
     poste: ligne.poste,
-    libelle: LIBELLE_POSTE[ligne.poste] ?? ligne.poste,
+    libelle,
     nom: ligne.nom,
+    // Ce que l'écran doit afficher : le nom seul quand il suffit, précédé
+    // de sa famille quand il est ambigu.
+    nomAffiche: nomAffiche(ligne, libelle),
     unite: sacs ? "sacs" : doses ? "flacons" : ligne.unite,
     // Unité du prix saisi : « Fcfa / sac de 50 kg », « Fcfa / flacon de
     // 1 000 doses ». C'est ce que le propriétaire a sous les yeux sur sa
