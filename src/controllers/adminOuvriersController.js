@@ -192,7 +192,7 @@ async function listerOuvriers(req, res) {
     const { rows } = await pool.query(
       `SELECT o.id, o.prenom, o.nom, o.telephone,
               (o.pin_hash IS NOT NULL) AS pin_cree,
-              o.compte_verrouille, o.verrouille_le, o.cree_le,
+              o.compte_verrouille, o.verrouille_le, o.cree_le, o.retire_le,
               pe.poulailler_id, pe.prise_fonction,
               pl.nom AS poulailler_nom, pl.archive_le,
               f.id AS ferme_id, f.nom AS ferme_nom,
@@ -241,6 +241,11 @@ async function listerOuvriers(req, res) {
           telephone: o.telephone,
           pinCree: o.pin_cree,
           verrouille: o.compte_verrouille,
+          // Retiré de son poste : son compte est fermé, il ne peut plus
+          // se connecter. À ne pas confondre avec « verrouillé », qui
+          // veut dire trois codes faux et se déverrouille.
+          retire: Boolean(o.retire_le),
+          retireLe: o.retire_le,
           creeLe: o.cree_le,
           ventes,
           rattachement: o.poulailler_id
@@ -274,6 +279,10 @@ async function listerOuvriers(req, res) {
  * Remet un compte existant en poste. C'est la bonne réponse à « ce numéro
  * a déjà un compte » : on ne recrée pas, on rebranche.
  */
+// Rattacher un compte à un poulailler le remet en service : un
+// responsable qu'on reprend doit pouvoir se reconnecter sans démarche
+// supplémentaire, sinon SEDAP croirait l'avoir réactivé et il resterait
+// bloqué devant son téléphone.
 async function rattacherOuvrier(req, res) {
   const id = Number(req.params.id);
   const poulaillerId = Number(req.body?.poulaillerId);
@@ -335,6 +344,11 @@ async function rattacherOuvrier(req, res) {
       [poulailler.ferme_id, poulaillerId, id, ouvrier.prenom, ouvrier.telephone]
     );
 
+    // Le remettre en poste rouvre son compte : sans ça, SEDAP le
+    // croirait réactivé et il resterait bloqué devant son téléphone
+    // avec « compte retiré » (migration 033).
+    await client.query("UPDATE ouvriers SET retire_le = NULL WHERE id = $1", [id]);
+
     await client.query("COMMIT");
 
     parAdmin(req, {
@@ -380,6 +394,13 @@ async function retirerOuvrier(req, res) {
     // Colonne héritée des premières versions, encore lue par endroits :
     // la laisser pointer sur un responsable retiré le ferait réapparaître.
     await pool.query("UPDATE poulaillers SET ouvrier_id = NULL WHERE ouvrier_id = $1", [id]);
+
+    // Le compte se ferme (demande Mengué, 4 nov. 2026). Détacher sans
+    // fermer laissait un renvoyé se connecter : il ne voyait rien, mais
+    // l'accès s'ouvrait encore. On ferme aussi la session en cours en
+    // vidant le code : le jeton déjà émis ne donne de toute façon accès
+    // à rien, puisque tout passe par le poulailler qu'il n'a plus.
+    await pool.query("UPDATE ouvriers SET retire_le = now() WHERE id = $1", [id]);
 
     parAdmin(req, {
       action: "ouvrier_retire",

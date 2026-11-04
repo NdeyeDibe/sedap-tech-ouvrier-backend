@@ -23,6 +23,7 @@ function genererToken(ouvrierId) {
 // pouvait plus se connecter depuis un téléphone qui l'envoyait sans.
 const REQUETE_PAR_TELEPHONE = `
   SELECT o.id, o.pin_hash, o.prenom, o.tentatives_echouees, o.compte_verrouille,
+         o.retire_le,
          -- La suspension du propriétaire de sa ferme : elle vaut pour ses
          -- ouvriers aussi (cahier admin VII, maquette 13).
          (SELECT p.suspendu_le
@@ -56,7 +57,14 @@ async function verifierTelephone(req, res) {
       return res.json({ existe: false, aDejaUnPin: false });
     }
 
-    res.json({ existe: true, aDejaUnPin: !!ouvrier.pin_hash });
+    // Un compte retiré est annoncé dès le numéro : l'écran suivant lui
+    // dirait « code incorrect » après trois essais, ce qui est faux et
+    // l'enverrait appeler pour un déverrouillage qui n'existe pas.
+    res.json({
+      existe: true,
+      aDejaUnPin: !!ouvrier.pin_hash,
+      retire: Boolean(ouvrier.retire_le),
+    });
   } catch (erreur) {
     console.error("Erreur vérification téléphone :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
@@ -78,6 +86,15 @@ async function creerPin(req, res) {
 
     if (!ouvrier) {
       return res.status(404).json({ erreur: "Numéro non reconnu. Demandez à votre responsable de vous enregistrer d'abord." });
+    }
+
+    // Même barrage qu'à la connexion : sans lui, un responsable retiré
+    // qui n'avait jamais créé son code pourrait s'en créer un et entrer.
+    if (ouvrier.retire_le) {
+      return res.status(403).json({
+        erreur: "Ce compte a été retiré de son poste. Contactez SEDAP.",
+        compteRetire: true,
+      });
     }
 
     if (ouvrier.pin_hash) {
@@ -116,6 +133,17 @@ async function connexion(req, res) {
       return res.status(403).json({
         erreur: "Cette ferme est suspendue. Contactez SEDAP.",
         compteSuspendu: true,
+      });
+    }
+
+    // Retiré de son poste : le compte est fermé (migration 033). Avant
+    // le verrouillage pour codes faux, parce que c'est la raison la plus
+    // forte et que le remède n'est pas le même — ici il n'y a rien à
+    // déverrouiller, c'est une décision de SEDAP.
+    if (ouvrier.retire_le) {
+      return res.status(403).json({
+        erreur: "Ce compte a été retiré de son poste. Contactez SEDAP.",
+        compteRetire: true,
       });
     }
 
