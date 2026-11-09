@@ -174,9 +174,17 @@ async function ajouterAutreProduit(req, res) {
       return res.status(404).json({ erreur: "Aucun poulailler associé à ce compte." });
     }
 
+    // Deux colonnes, deux métiers (migration 034) :
+    //   quantite       = ce qui reste en stock, décrémenté à chaque usage
+    //                    déclaré dans « Produits utilisés » ;
+    //   quantite_recue = ce qui a été réceptionné, jamais modifié ensuite.
+    // C'est la seconde que lit la vue des réceptions, donc le propriétaire
+    // et les dépenses de la bande. Avant, une seule colonne faisait les
+    // deux : la réception rétrécissait à mesure que le produit était
+    // consommé et tombait à 0 quand il était épuisé.
     const resultat = await pool.query(
-      `INSERT INTO stock_autres_produits (poulailler_id, nom, quantite, prix_unitaire, source)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      `INSERT INTO stock_autres_produits (poulailler_id, nom, quantite, quantite_recue, prix_unitaire, source)
+       VALUES ($1, $2, $3, $3, $4, $5) RETURNING *`,
       [poulaillerId, nom.trim(), quantite, source === "proprietaire" ? null : prixUnitaire, source]
     );
     res.status(201).json(resultat.rows[0]);

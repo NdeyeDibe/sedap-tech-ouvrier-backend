@@ -232,7 +232,11 @@ async function renseignerPrix(req, res) {
             AND f.proprietaire_id = $3
             AND r.prix_unitaire IS NULL
           RETURNING r.id, r.poulailler_id, r.nom AS produit, 'unités' AS unite,
-                    false AS en_sacs, r.quantite, r.date_reception`,
+                    false AS en_sacs,
+                    -- quantite_recue, pas quantite : la seconde est le stock
+                    -- restant, qui baisse à chaque usage (migration 034).
+                    -- C'est elle qui renvoyait 0 et faisait « Total : 0 ».
+                    r.quantite_recue AS quantite, r.date_reception`,
     poussins: `UPDATE bandes r
             SET prix_unitaire_poussin = $1, provenance = $4
           FROM poulaillers pl, fermes f
