@@ -29,7 +29,10 @@ const {
   detailSaisieAdmin,
 } = require("../controllers/adminBandesController");
 const { corrigerVente, supprimerVente } = require("../controllers/adminVentesController");
-const { corrigerReception } = require("../controllers/adminReceptionsController");
+const {
+  corrigerReception,
+  corrigerAutreProduit,
+} = require("../controllers/adminReceptionsController");
 const {
   listeClients,
   creerClient,
@@ -222,6 +225,11 @@ router.delete("/ventes/:id", supprimerVente);
 
 // ------------------------------------------------------------ réceptions
 // Corriger une quantité reçue ajuste aussi le stock disponible.
+// Deux routes et non une : l'identifiant seul ne dit pas de quelle table
+// il vient — un n° 7 existe dans les deux. Le segment « autre » lève
+// l'ambiguïté, comme côté propriétaire (/receptions/autre/:id/prix).
+// Déclarée avant l'autre pour que « autre » ne soit jamais pris pour un id.
+router.patch("/receptions/autre/:id", corrigerAutreProduit);
 router.patch("/receptions/:id", corrigerReception);
 
 // ------------------------------------------------------ comptes bloqués

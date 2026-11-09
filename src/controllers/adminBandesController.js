@@ -408,12 +408,22 @@ async function detailBandeAdmin(req, res) {
         // La jointure rapporte ce qui a été COMPTÉ à la réception : « 4
         // flacons de 1 000 doses » plutôt que « 4 000 doses », qui ne dit
         // pas ce que l'ouvrier a eu entre les mains.
-        `SELECT r.id, r.poste, r.nom, r.unite, r.quantite, r.prix_unitaire,
+        // Les « autres produits » (nom libre) sont inclus depuis nov. 2026 :
+        // ils étaient invisibles ici, donc impossibles à corriger, alors
+        // qu'une quantité fausse y fausse le bilan comme ailleurs. Les
+        // poussins restent écartés, ils ont leur propre bloc.
+        //
+        // La jointure est conditionnée à l'origine : les identifiants des
+        // deux tables se recouvrent (il existe un stock_receptions n° 7 ET
+        // un stock_autres_produits n° 7), et sans ce garde-fou un « autre
+        // produit » hériterait des flacons et des doses d'un vaccin.
+        `SELECT r.origine, r.id, r.poste, r.nom, r.unite, r.quantite, r.prix_unitaire,
                 r.provenance, r.date_reception, r.source,
                 sr.unites_recues, sr.doses_par_unite
            FROM receptions_ferme r
-           LEFT JOIN stock_receptions sr ON sr.id = r.id
-          WHERE r.bande_id = $1 AND r.origine = 'produit'
+           LEFT JOIN stock_receptions sr
+                  ON sr.id = r.id AND r.origine = 'produit'
+          WHERE r.bande_id = $1 AND r.origine IN ('produit', 'autre')
           ORDER BY r.date_reception DESC`,
         [bandeId]
       ),
@@ -555,6 +565,9 @@ async function detailBandeAdmin(req, res) {
       })),
 
       receptions: receptions.rows.map((r) => ({
+        // L'origine dit à quelle table appartient cet identifiant, donc
+        // quelle route de correction l'écran doit appeler.
+        origine: r.origine,
         id: r.id,
         poste: r.poste,
         nom: r.nom,

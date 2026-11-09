@@ -212,4 +212,195 @@ async function corrigerReception(req, res) {
   }
 }
 
-module.exports = { corrigerReception, LIBELLES_RECEPTION: LIBELLES };
+// ------------------------------------------------ les « autres produits »
+//
+// Même besoin, autre forme. Un « autre produit » (nom libre, saisi par le
+// responsable quand le produit n'est pas au catalogue) vit dans UNE seule
+// ligne qui porte à la fois ce qui a été reçu (quantite_recue) et ce qu'il
+// en reste (quantite) — il n'y a pas de table de stock séparée. L'écart
+// d'une correction se répercute donc sur la même ligne.
+//
+// Le nom est modifiable ici, et c'est voulu : c'est du texte libre, donc
+// la première chose à se tromper. « Norflo » saisi à la va-vite devient un
+// produit que le propriétaire ne reconnaît pas sur sa facture.
+//
+// Fonction distincte de corrigerReception plutôt que des conditions
+// greffées dedans : la correction du catalogue fonctionne, et la rendre
+// double rendrait les deux plus fragiles pour personne.
+
+const CHAMPS_AUTRE = ["nom", "quantite_recue", "prix_unitaire", "date_reception"];
+
+const LIBELLES_AUTRE = {
+  nom: "Nom du produit",
+  quantite_recue: "Quantité reçue",
+  prix_unitaire: "Prix unitaire",
+  date_reception: "Date de réception",
+};
+
+const DEPUIS_CORPS_AUTRE = {
+  nom: "nom",
+  quantiteRecue: "quantite_recue",
+  prixUnitaire: "prix_unitaire",
+  dateReception: "date_reception",
+};
+
+// PATCH /api/admin/receptions/autre/:id
+async function corrigerAutreProduit(req, res) {
+  const receptionId = Number(req.params.id);
+  if (!Number.isInteger(receptionId)) {
+    return res.status(400).json({ erreur: "Identifiant de réception invalide." });
+  }
+
+  const motif = texte(req.body.motif);
+  if (!motif) {
+    return res.status(400).json({ erreur: "Indiquez la raison de la correction." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      `SELECT id, poulailler_id, source, quantite AS reste,
+              ${CHAMPS_AUTRE.join(", ")}
+         FROM stock_autres_produits
+        WHERE id = $1
+          FOR UPDATE`,
+      [receptionId]
+    );
+    const reception = rows[0];
+    if (!reception) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Réception introuvable." });
+    }
+
+    const avant = {
+      ...reception,
+      quantite_recue: reception.quantite_recue === null ? null : Number(reception.quantite_recue),
+      prix_unitaire: reception.prix_unitaire === null ? null : Number(reception.prix_unitaire),
+    };
+
+    const apres = {};
+    for (const c of CHAMPS_AUTRE) apres[c] = avant[c];
+    for (const [cle, colonne] of Object.entries(DEPUIS_CORPS_AUTRE)) {
+      if (!(cle in req.body)) continue;
+      const brut = req.body[cle];
+      if (colonne === "quantite_recue" || colonne === "prix_unitaire") apres[colonne] = nombre(brut);
+      else apres[colonne] = texte(brut);
+    }
+
+    for (const [colonne, valeur] of Object.entries(apres)) {
+      if (valeur === undefined) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ erreur: `${LIBELLES_AUTRE[colonne]} : valeur invalide.` });
+      }
+    }
+
+    if (!apres.nom) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Nom du produit : un nom est attendu." });
+    }
+    if (apres.quantite_recue === null || apres.quantite_recue <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Quantité reçue : un nombre supérieur à 0 est attendu." });
+    }
+    if (apres.prix_unitaire !== null && apres.prix_unitaire < 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Prix unitaire : un montant positif est attendu." });
+    }
+    // Même règle qu'à la saisie (contrainte autre_prix_si_ouvrier).
+    if (reception.source === "ouvrier" && apres.prix_unitaire === null) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        erreur: "Le prix est obligatoire quand c'est l'ouvrier qui a payé cette réception.",
+      });
+    }
+
+    // L'écart se répercute sur ce qu'il reste. Même garde-fou que pour le
+    // catalogue : on refuse une correction qui rendrait le stock négatif.
+    const ecart = apres.quantite_recue - avant.quantite_recue;
+    const resteApres = Number(reception.reste) + ecart;
+    if (resteApres < 0) {
+      await client.query("ROLLBACK");
+      const consomme = Number(avant.quantite_recue) - Number(reception.reste);
+      return res.status(409).json({
+        erreur:
+          `Impossible : ${consomme} ${consomme > 1 ? "unités ont" : "unité a"} déjà été ` +
+          `utilisée${consomme > 1 ? "s" : ""} sur cette réception de ${avant.nom}. ` +
+          `La ramener à ${apres.quantite_recue} donnerait un stock négatif.`,
+      });
+    }
+
+    const diff = differences(avant, apres, CHAMPS_AUTRE);
+    if (Object.keys(diff).length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Aucune modification : les valeurs sont identiques." });
+    }
+
+    await client.query(
+      `UPDATE stock_autres_produits
+          SET nom = $2, quantite_recue = $3, prix_unitaire = $4,
+              quantite = quantite + $5,
+              date_reception = coalesce($6::timestamptz, date_reception)
+        WHERE id = $1`,
+      [
+        receptionId,
+        apres.nom,
+        apres.quantite_recue,
+        apres.prix_unitaire,
+        ecart,
+        apres.date_reception,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    const { rows: rattachement } = await pool.query(
+      "SELECT bande_id FROM receptions_ferme WHERE origine = 'autre' AND id = $1",
+      [receptionId]
+    );
+
+    parAdmin(req, {
+      action: "reception_corrigee",
+      cibleType: "reception",
+      cibleId: receptionId,
+      poulaillerId: reception.poulailler_id,
+      bandeId: rattachement[0]?.bande_id ?? undefined,
+      details: {
+        motif,
+        produit: avant.nom,
+        stockAjuste: ecart === 0 ? null : { ecart, unite: "unités", apres: resteApres },
+        champs: Object.fromEntries(
+          Object.entries(diff).map(([colonne, valeurs]) => [
+            colonne,
+            { libelle: LIBELLES_AUTRE[colonne], ...valeurs },
+          ])
+        ),
+      },
+    });
+
+    res.json({
+      id: receptionId,
+      corrections: Object.keys(diff).length,
+      stock: { produit: apres.nom, unite: "unités", quantite: resteApres },
+      message:
+        ecart === 0
+          ? null
+          : `Stock de ${apres.nom} ajusté de ${ecart > 0 ? "+" : ""}${ecart} unités : ` +
+            `il en reste maintenant ${resteApres}.`,
+    });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur correction autre produit :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  corrigerReception,
+  corrigerAutreProduit,
+  LIBELLES_RECEPTION: LIBELLES,
+  LIBELLES_RECEPTION_AUTRE: LIBELLES_AUTRE,
+};
