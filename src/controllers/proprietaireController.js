@@ -118,9 +118,13 @@ async function tableauDeBord(req, res) {
 // Le programme sanitaire complet : ce qui était prévu, ce qui a été fait,
 // ce qui est en retard. La vue programme_bandes croise le programme de
 // référence avec les actes réellement enregistrés.
+// Le poids mesuré accompagne le pesage : « Fait » sans le chiffre
+// n'apprend rien à personne, et c'est ce chiffre qui dit si la bande
+// grandit normalement. Nul sur les autres actes.
 const REQUETE_PROGRAMME = `
   SELECT ordre, nom, type, jour_debut, jour_fin,
-         date_prevue, date_limite, confirme, date_faite, en_retard
+         date_prevue, date_limite, confirme, date_faite, en_retard,
+         poids_mesure_g, poids_min_g, poids_max_g, dans_fourchette
     FROM programme_bandes
    WHERE bande_id = $1
    ORDER BY ordre
@@ -323,6 +327,10 @@ async function detailPoulailler(req, res) {
         confirme: p.confirme,
         dateFaite: p.date_faite,
         enRetard: p.en_retard,
+        poidsMesureG: p.poids_mesure_g === null ? null : Number(p.poids_mesure_g),
+        poidsMinG: p.poids_min_g === null ? null : Number(p.poids_min_g),
+        poidsMaxG: p.poids_max_g === null ? null : Number(p.poids_max_g),
+        dansFourchette: p.dans_fourchette,
       })),
 
       depenses: {

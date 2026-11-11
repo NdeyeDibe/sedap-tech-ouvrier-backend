@@ -536,6 +536,13 @@ async function detailBandeAdmin(req, res) {
         confirme: p.confirme,
         dateFaite: p.date_faite,
         enRetard: p.en_retard,
+        // Pesages : le poids relevé, et s'il tombe dans la fourchette
+        // attendue. Nuls sur les autres actes. Sans eux, l'écran disait
+        // « Fait » sans jamais montrer le chiffre.
+        poidsMesureG: p.poids_mesure_g === null ? null : Number(p.poids_mesure_g),
+        poidsMinG: p.poids_min_g === null ? null : Number(p.poids_min_g),
+        poidsMaxG: p.poids_max_g === null ? null : Number(p.poids_max_g),
+        dansFourchette: p.dans_fourchette,
       })),
 
       depenses: {
