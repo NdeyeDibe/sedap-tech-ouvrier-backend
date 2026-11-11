@@ -69,6 +69,9 @@ const NOMS_AMBIGUS = new Set(
  * téléphone.
  */
 function nomAffiche(ligne, libelle) {
+  // Un « autre produit » photographié n'a pas encore de nom : c'est au
+  // propriétaire de le lui donner, et la phrase doit le lui dire.
+  if (ligne.origine === "autre" && !ligne.nom) return "Produit à nommer";
   if (ligne.origine !== "produit") return ligne.nom;
   return NOMS_AMBIGUS.has(ligne.nom) ? `${libelle} · ${ligne.nom}` : ligne.nom;
 }
@@ -127,6 +130,12 @@ function enveloppe(ligne) {
     bandeId: ligne.bande_id,
     bandeNumero: ligne.bande_numero,
     prixManquant: prix === null,
+    // La photo prise par le responsable, et le fait qu'il reste à nommer.
+    // Les deux sont indépendants du prix : quand c'est l'ouvrier qui a
+    // payé, le prix est déjà là et le propriétaire ne viendrait jamais
+    // sur cet écran — le produit resterait sans nom pour toujours.
+    photoUrl: ligne.photo_url ?? null,
+    nomManquant: ligne.origine === "autre" && !ligne.nom,
   };
 }
 
@@ -162,6 +171,7 @@ async function registreReceptions(req, res) {
 
     const receptions = rows.map(enveloppe);
     const sansPrix = receptions.filter((r) => r.prixManquant);
+    const sansNom = receptions.filter((r) => r.nomManquant);
 
     res.json({
       poulailler: { id: poulailler.id, nom: poulailler.nom },
@@ -172,6 +182,10 @@ async function registreReceptions(req, res) {
         // l'ouvrier lui sont remboursés, mais ce sont deux flux distincts.
         depenseConnue: receptions.reduce((t, r) => t + (r.montant ?? 0), 0),
         sansPrix: sansPrix.length,
+        // Compté à part du prix : un produit photographié dont l'ouvrier a
+        // déjà payé le prix n'apparaît dans aucun décompte « sans prix »,
+        // et resterait invisible si on ne comptait que celui-là.
+        sansNom: sansNom.length,
       },
     });
   } catch (erreur) {
@@ -301,4 +315,79 @@ async function renseignerPrix(req, res) {
   }
 }
 
-module.exports = { registreReceptions, renseignerPrix, LIBELLE_POSTE };
+// ------------------------------------------- nommer un produit photographié
+//
+// Le responsable a photographié le produit au lieu de l'écrire. Le
+// propriétaire, qui sait lire, regarde la photo et lui donne son nom.
+//
+// SÉPARÉ DU PRIX, ET C'EST TOUT L'INTÉRÊT. Quand c'est l'ouvrier qui a
+// payé, le prix est saisi dès la réception : le propriétaire n'ouvrirait
+// jamais l'écran des prix, et le produit resterait anonyme pour toujours.
+// Nommer et chiffrer sont deux manques indépendants.
+//
+// On ne RENOMME pas : la condition « nom IS NULL » protège le nom déjà
+// donné. Une correction après coup passe par SEDAP, qui en garde la trace
+// avec son motif — sans quoi le libellé d'une dépense pourrait changer
+// discrètement sur une facture déjà lue.
+async function nommerProduit(req, res) {
+  const { receptionId } = req.params;
+  const nom = String(req.body.nom ?? "").trim();
+
+  if (nom.length < 2) {
+    return res.status(400).json({ erreur: "Donnez un nom d'au moins deux lettres." });
+  }
+  if (nom.length > 150) {
+    return res.status(400).json({ erreur: "Ce nom est trop long." });
+  }
+
+  try {
+    const { rows, rowCount } = await pool.query(
+      `UPDATE stock_autres_produits r
+          SET nom = $1
+        FROM poulaillers pl, fermes f
+        WHERE r.id = $2
+          AND pl.id = r.poulailler_id
+          AND f.id = pl.ferme_id
+          AND f.proprietaire_id = $3
+          AND r.nom IS NULL
+        RETURNING r.id, r.poulailler_id, r.photo_url,
+                  r.quantite_recue AS quantite, r.date_reception`,
+      [nom, receptionId, req.utilisateur.id]
+    );
+
+    if (rowCount === 0) {
+      return res.status(404).json({
+        erreur: "Réception introuvable, ou ce produit porte déjà un nom.",
+      });
+    }
+
+    const ligne = rows[0];
+    const { rows: rattachement } = await pool.query(
+      "SELECT bande_id FROM receptions_ferme WHERE origine = 'autre' AND id = $1",
+      [receptionId]
+    );
+
+    parProprietaire(req, {
+      action: "produit_nomme",
+      cibleType: "reception",
+      cibleId: Number(receptionId),
+      poulaillerId: ligne.poulailler_id,
+      bandeId: rattachement[0]?.bande_id ?? undefined,
+      details: {
+        origine: "autre",
+        produit: nom,
+        quantite: Number(ligne.quantite),
+        unite: "unités",
+        photoUrl: ligne.photo_url,
+        dateReception: ligne.date_reception,
+      },
+    });
+
+    res.json({ id: Number(receptionId), origine: "autre", nom });
+  } catch (erreur) {
+    console.error("Erreur nommage d'un produit :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+module.exports = { registreReceptions, renseignerPrix, nommerProduit, LIBELLE_POSTE };

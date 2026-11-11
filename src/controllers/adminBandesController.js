@@ -418,7 +418,7 @@ async function detailBandeAdmin(req, res) {
         // un stock_autres_produits n° 7), et sans ce garde-fou un « autre
         // produit » hériterait des flacons et des doses d'un vaccin.
         `SELECT r.origine, r.id, r.poste, r.nom, r.unite, r.quantite, r.prix_unitaire,
-                r.provenance, r.date_reception, r.source,
+                r.provenance, r.date_reception, r.source, r.photo_url,
                 sr.unites_recues, sr.doses_par_unite
            FROM receptions_ferme r
            LEFT JOIN stock_receptions sr
@@ -575,6 +575,11 @@ async function detailBandeAdmin(req, res) {
         // L'origine dit à quelle table appartient cet identifiant, donc
         // quelle route de correction l'écran doit appeler.
         origine: r.origine,
+        // La photo prise par le responsable quand il n'a pas su écrire le
+        // nom. Sans elle, l'admin n'aurait aucun moyen de nommer le
+        // produit depuis la fenêtre de correction.
+        photoUrl: r.photo_url ?? null,
+        nomManquant: r.origine === "autre" && !r.nom,
         id: r.id,
         poste: r.poste,
         nom: r.nom,

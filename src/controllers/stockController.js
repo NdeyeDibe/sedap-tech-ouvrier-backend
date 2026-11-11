@@ -154,15 +154,38 @@ async function listerAutresProduits(req, res) {
 }
 
 // POST /api/stock/autres — ajouter un "autre produit" (nom libre)
-// Body : { nom, quantite, prixUnitaire?, source? } — voir recevoirStock
-// ci-dessus pour la règle "source" (ouvrier paie / propriétaire a déjà payé).
+// Body : { nom?, photoUrl?, quantite, prixUnitaire?, source? } — voir
+// recevoirStock ci-dessus pour la règle "source".
+//
+// LE NOM EST FACULTATIF DEPUIS NOV. 2026, la photo le remplace.
+// Le responsable lit et écrit peu : le nom était le seul champ libre de
+// l'application, et celui où tout se perdait — « Norflo » pour
+// Norfloxacine, quand la saisie n'était pas simplement abandonnée. Il
+// photographie donc le produit et ne saisit que des chiffres ; le nom
+// est mis ensuite par le propriétaire ou par SEDAP, qui savent lire.
+//
+// Il faut l'un OU l'autre, jamais rien : sans nom ni photo, la réception
+// serait impossible à identifier et personne ne pourrait la rattraper.
+// La base porte la même règle (contrainte autre_nom_ou_photo), celle-ci
+// n'est là que pour rendre le message compréhensible.
 async function ajouterAutreProduit(req, res) {
-  const { nom, quantite } = req.body;
+  const { quantite } = req.body;
   const source = req.body.source === "proprietaire" ? "proprietaire" : "ouvrier";
   const prixUnitaire = req.body.prixUnitaire;
+  const nom = typeof req.body.nom === "string" && req.body.nom.trim() !== ""
+    ? req.body.nom.trim()
+    : null;
+  const photoUrl = typeof req.body.photoUrl === "string" && req.body.photoUrl.trim() !== ""
+    ? req.body.photoUrl.trim()
+    : null;
 
-  if (!nom || !quantite || quantite <= 0) {
-    return res.status(400).json({ erreur: "Nom et quantité valides sont requis." });
+  if (!quantite || quantite <= 0) {
+    return res.status(400).json({ erreur: "Une quantité valide est requise." });
+  }
+  if (!nom && !photoUrl) {
+    return res.status(400).json({
+      erreur: "Donne un nom au produit, ou prends-le en photo.",
+    });
   }
   if (source === "ouvrier" && (!prixUnitaire || prixUnitaire <= 0)) {
     return res.status(400).json({ erreur: "Prix unitaire valide requis." });
@@ -183,9 +206,10 @@ async function ajouterAutreProduit(req, res) {
     // deux : la réception rétrécissait à mesure que le produit était
     // consommé et tombait à 0 quand il était épuisé.
     const resultat = await pool.query(
-      `INSERT INTO stock_autres_produits (poulailler_id, nom, quantite, quantite_recue, prix_unitaire, source)
-       VALUES ($1, $2, $3, $3, $4, $5) RETURNING *`,
-      [poulaillerId, nom.trim(), quantite, source === "proprietaire" ? null : prixUnitaire, source]
+      `INSERT INTO stock_autres_produits
+         (poulailler_id, nom, photo_url, quantite, quantite_recue, prix_unitaire, source)
+       VALUES ($1, $2, $3, $4, $4, $5, $6) RETURNING *`,
+      [poulaillerId, nom, photoUrl, quantite, source === "proprietaire" ? null : prixUnitaire, source]
     );
     res.status(201).json(resultat.rows[0]);
   } catch (erreur) {

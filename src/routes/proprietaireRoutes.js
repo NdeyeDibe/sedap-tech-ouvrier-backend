@@ -32,6 +32,7 @@ const {
 const {
   registreReceptions,
   renseignerPrix,
+  nommerProduit,
 } = require("../controllers/proprietaireReceptionsController");
 const {
   clePublique,
@@ -71,6 +72,9 @@ router.delete("/ventes/details/:detailId", supprimerDetail);
 // qu'il a réglés lui-même chez le fournisseur
 router.get("/poulaillers/:poulaillerId/receptions", registreReceptions);
 router.patch("/receptions/:origine/:receptionId/prix", renseignerPrix);
+// Nommer un produit photographié : seuls les « autres produits » en ont
+// besoin, d'où l'origine fixée dans le chemin plutôt que paramétrée.
+router.patch("/receptions/autre/:receptionId/nom", nommerProduit);
 
 // Personnel et frais — les seules autres écritures autorisées
 router.post("/personnel", ajouterOuvrier);
