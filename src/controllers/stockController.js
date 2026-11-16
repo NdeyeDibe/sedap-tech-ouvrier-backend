@@ -3,6 +3,7 @@
 // seedStockInitial) et les réceptions de stock.
 const pool = require("../db/pool");
 const { obtenirPoulaillerOuvrier } = require("../utils/poulailler");
+const { flaconsParFormat } = require("../services/flacons");
 
 // GET /api/stock — liste de tous les produits/variantes en stock pour
 // le poulailler de l'ouvrier connecté
@@ -14,14 +15,27 @@ async function listerStock(req, res) {
     }
 
     const resultat = await pool.query(
-      `SELECT id, produit_id, variante_id, nom, unite, quantite
-       FROM stock_produits
-       WHERE poulailler_id = $1
-       ORDER BY produit_id, variante_id`,
+      `SELECT sp.id, sp.produit_id, sp.variante_id, sp.nom, sp.unite, sp.quantite
+       FROM stock_produits sp
+       WHERE sp.poulailler_id = $1
+       ORDER BY sp.produit_id, sp.variante_id`,
       [poulaillerId]
     );
 
-    res.json(resultat.rows);
+    // Les vaccins repartent avec le détail de leurs flacons par
+    // contenance. Le stock est tenu en doses, mais un flacon ne se divise
+    // pas et deux formats cohabitent : 4 500 doses peuvent être 4 flacons
+    // de 1 000 et un de 500, ou 9 de 500 (Ndeye, 16 nov. 2026).
+    // Sans ce détail, l'écran ne saurait pas quoi proposer.
+    const lignes = await Promise.all(
+      resultat.rows.map(async (ligne) =>
+        ligne.produit_id === "vaccin"
+          ? { ...ligne, formats: await flaconsParFormat(pool, ligne.id) }
+          : ligne
+      )
+    );
+
+    res.json(lignes);
   } catch (erreur) {
     console.error("Erreur liste stock :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });

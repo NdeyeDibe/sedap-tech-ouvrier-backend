@@ -73,6 +73,29 @@ const REQUETE_FERME = `
        WHERE ss.bande_id = b.id AND ss.date_saisie = current_date
     ), 'bien') AS etat_ouvrier,
 
+    -- La dernière vaccination faite avec trop peu de doses. Depuis le
+    -- 14 nov. 2026, un stock court n'interdit plus de vacciner : on
+    -- déduit ce qui reste et on enregistre l'acte. L'écart doit alors
+    -- remonter à SEDAP, sinon personne n'apprendrait qu'une bande a été
+    -- vaccinée à moitié.
+    -- On compare des DOSES à des SUJETS, pas des flacons à des flacons :
+    -- deux contenances peuvent se mélanger dans une même vaccination
+    -- (4 flacons de 1 000 et un de 500), et « 5 flacons » ne dirait pas
+    -- si la bande est couverte. Les sujets non vaccinés, si.
+    (SELECT json_build_object(
+              'vaccin', v.vaccin_nom,
+              'jour', v.jour_bande,
+              'doses', v.doses_utilisees,
+              'sujets', v.doses_necessaires,
+              'date', v.date_saisie)
+       FROM vaccinations v
+      WHERE v.bande_id = b.id
+        AND v.doses_necessaires IS NOT NULL
+        AND v.doses_utilisees IS NOT NULL
+        AND v.doses_utilisees < v.doses_necessaires
+      ORDER BY v.date_saisie DESC, v.id DESC
+      LIMIT 1) AS vaccin_sous_dose,
+
     -- Les trois saisies du jour : faites ou non.
     EXISTS (SELECT 1 FROM saisies_mortalite sm
              WHERE sm.bande_id = b.id AND sm.date_saisie = current_date) AS mortalite_faite,
@@ -347,6 +370,27 @@ async function charger(parametres) {
           ]
         : [];
 
+    // Vacciné avec trop peu de doses. Visible du propriétaire comme de
+    // SEDAP : c'est lui qui paie le vaccin, et c'est sa bande qui est
+    // mal protégée. « surveiller » et non « urgent » — l'acte a bien été
+    // fait, c'est la couverture qui est incomplète.
+    const sousDose = ligne.vaccin_sous_dose;
+    const vaccinCourt = sousDose
+      ? [
+          {
+            type: "vaccination",
+            cle: "doses_insuffisantes",
+            niveau: "surveiller",
+            titre: "Bande vaccinée en partie seulement",
+            message:
+              `${sousDose.vaccin} fait au jour ${sousDose.jour} avec ${sousDose.doses} doses ` +
+              `pour ${sousDose.sujets} sujets : ${sousDose.sujets - sousDose.doses} n'ont pas été ` +
+              `vaccinés. Prévoir un rappel, et un flacon de plus à la prochaine livraison.`,
+            depuis: sousDose.date,
+          },
+        ]
+      : [];
+
     // « niveau » et non « statut » : ligne.statut est déjà celui de la
     // bande (en_cours, en_vente).
     if (!ligne.bande_id) {
@@ -359,7 +403,7 @@ async function charger(parametres) {
     }
 
     const bande = construireBande(ligne, retardsParBande[ligne.bande_id]);
-    const alertes = [...alertesCompte, ...chaleur, ...surcharge, ...alertesBande(bande)];
+    const alertes = [...alertesCompte, ...chaleur, ...surcharge, ...vaccinCourt, ...alertesBande(bande)];
     return {
       ...ligne,
       // La bande reconstruite : l'écran Alertes de l'admin y lit le jour du

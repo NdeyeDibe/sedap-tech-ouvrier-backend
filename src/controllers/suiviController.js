@@ -9,6 +9,12 @@
 // utilisé", sans que l'ouvrier ait à le redéclarer séparément.
 const pool = require("../db/pool");
 const { obtenirPoulaillerOuvrier } = require("../utils/poulailler");
+const {
+  flaconsParFormat,
+  proposerFlacons,
+  totalDoses,
+  totalFlacons,
+} = require("../services/flacons");
 
 // Table de référence poids/âge — CDC section VI.1 (même table que
 // lib/pesageTable.js côté frontend, dupliquée ici pour calculer
@@ -85,53 +91,128 @@ async function enregistrerVaccination(req, res) {
 
     let stockProduitId = null;
     let dosesNecessaires = null;
+    let dosesUtilisees = null;
+    let dosesParFlacon = null;
+    let flaconsNecessaires = null;
+    let flaconsUtilises = null;
+    let detailFlacons = null;
     if (varianteId) {
       const sujetsRestants = await obtenirSujetsRestants(client, bandeId);
-      dosesNecessaires = calculerDosesNecessaires(sujetsRestants);
 
       const resultatStock = await client.query(
-        "SELECT id, quantite FROM stock_produits WHERE poulailler_id = $1 AND produit_id = 'vaccin' AND variante_id = $2",
+        `SELECT sp.id, sp.quantite,
+                (SELECT sr.doses_par_unite
+                   FROM stock_receptions sr
+                  WHERE sr.stock_produit_id = sp.id AND sr.doses_par_unite IS NOT NULL
+                  ORDER BY sr.date_reception DESC, sr.id DESC
+                  LIMIT 1) AS doses_par_flacon
+           FROM stock_produits sp
+          WHERE sp.poulailler_id = $1 AND sp.produit_id = 'vaccin' AND sp.variante_id = $2`,
         [poulaillerId, varianteId]
       );
       if (resultatStock.rows.length === 0) {
         throw { statut: 400, message: "Vaccin inconnu dans le stock." };
       }
       const stock = resultatStock.rows[0];
-      if (stock.quantite < dosesNecessaires) {
-        // Message explicite : l'ouvrier doit savoir combien il manque,
-        // pas juste "pas en stock" (retour Mengué : la quantité
-        // nécessaire dépend de la taille de la bande, pas d'un flacon
-        // fixe).
-        throw {
-          statut: 409,
-          message: `Stock insuffisant : il faut ${dosesNecessaires} doses pour ${sujetsRestants} sujets, il reste ${stock.quantite} dose(s).`,
-        };
-      }
       stockProduitId = stock.id;
 
-      await client.query("UPDATE stock_produits SET quantite = quantite - $1 WHERE id = $2", [dosesNecessaires, stockProduitId]);
+      // ON COMPTE EN FLACONS ENTIERS, ET PAR CONTENANCE (Ndeye, 16 nov.
+      // 2026). Un flacon ne se divise pas, et deux formats cohabitent :
+      // pour 4 092 sujets, 4 flacons de 1 000 plus un de 500 couvrent
+      // l'effectif en perdant 408 doses, là où 5 flacons de 1 000 en
+      // perdraient 908. Raisonner en doses produisait des messages que
+      // personne ne pouvait suivre.
+      const formats = await flaconsParFormat(client, stockProduitId);
+
+      // Le responsable a le dernier mot sur ce qu'il a réellement ouvert
+      // (son idée) : l'application propose, il décide. À défaut, on prend
+      // la proposition — un parcours hors ligne rejoué plus tard peut
+      // très bien arriver sans détail.
+      const demande = Array.isArray(req.body.flacons) ? req.body.flacons : null;
+      detailFlacons = demande
+        ? demande
+            .map((l) => ({ doses: Number(l.doses), flacons: Math.max(0, Number(l.flacons) || 0) }))
+            .filter((l) => Number.isFinite(l.doses) && l.doses > 0 && l.flacons > 0)
+        : proposerFlacons(formats, sujetsRestants);
+
+      // On ne retire jamais plus de flacons qu'il n'y en a sur l'étagère,
+      // même si l'écran en demande davantage : une saisie hors ligne peut
+      // être rejouée après qu'un autre flacon a été consommé.
+      detailFlacons = detailFlacons
+        .map((l) => {
+          const dispo = formats.find((f) => f.doses === l.doses)?.disponibles ?? 0;
+          return { doses: l.doses, flacons: Math.min(l.flacons, dispo) };
+        })
+        .filter((l) => l.flacons > 0);
+
+      const propositionComplete = proposerFlacons(formats, sujetsRestants);
+      flaconsNecessaires = totalFlacons(propositionComplete);
+      flaconsUtilises = totalFlacons(detailFlacons);
+      dosesNecessaires = sujetsRestants;
+      // Gardée pour les messages quand un seul format est en jeu.
+      dosesParFlacon = detailFlacons[0]?.doses ?? formats[0]?.doses ?? null;
+
+      // ON N'INTERDIT PLUS LA VACCINATION FAUTE DE DOSES (décision Ndeye,
+      // 14 nov. 2026). Le refus laissait le responsable sans issue : sur
+      // la bande n° 1 du Bâtiment 1, 4 000 doses reçues pour 4 092 sujets
+      // — donc 4 500 doses « nécessaires » après arrondi — il s'est
+      // retrouvé bloqué, est allé marquer sa vaccination dans « Produits
+      // utilisés », et l'acte n'a jamais été enregistré nulle part.
+      //
+      // On déduit donc ce qui reste et on enregistre l'acte. L'écart est
+      // conservé : c'est lui qui dit à SEDAP qu'une bande a été vaccinée
+      // à court de doses, ce qu'aucun stock ne raconte après coup.
+      // Des flacons entiers, jamais des doses à l'unité. Le reste d'un
+      // flacon entamé est perdu, pas remis en stock.
+      dosesUtilisees = Math.min(Number(stock.quantite), totalDoses(detailFlacons));
+
+      if (dosesUtilisees > 0) {
+        await client.query(
+          "UPDATE stock_produits SET quantite = quantite - $1 WHERE id = $2",
+          [dosesUtilisees, stockProduitId]
+        );
+      }
     }
 
     const resultatVaccination = await client.query(
-      `INSERT INTO vaccinations (bande_id, jour_bande, vaccin_nom, date_saisie)
-       VALUES ($1, $2, $3, CURRENT_DATE) RETURNING *`,
-      [bandeId, jourBande, vaccinNom]
+      `INSERT INTO vaccinations (bande_id, jour_bande, vaccin_nom, date_saisie,
+                                 doses_utilisees, doses_necessaires,
+                                 doses_par_flacon, flacons_utilises, flacons_necessaires,
+                                 stock_produit_id, flacons_detail)
+       VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [bandeId, jourBande, vaccinNom, dosesUtilisees, dosesNecessaires,
+       dosesParFlacon, flaconsUtilises, flaconsNecessaires,
+       stockProduitId, detailFlacons ? JSON.stringify(detailFlacons) : null]
     );
 
     // Enregistré automatiquement comme "produit utilisé" — l'ouvrier
     // n'a pas à le redéclarer dans l'écran "Produits utilisés"
     // (décision Ndeye). Quantité = le nombre de doses réellement
     // utilisées pour toute la bande, pas un forfait de 1.
-    if (stockProduitId) {
+    if (stockProduitId && dosesUtilisees > 0) {
       await client.query(
         `INSERT INTO produits_utilises (bande_id, stock_produit_id, quantite, date_saisie)
          VALUES ($1, $2, $3, CURRENT_DATE)`,
-        [bandeId, stockProduitId, dosesNecessaires]
+        [bandeId, stockProduitId, dosesUtilisees]
       );
     }
 
     await client.query("COMMIT");
-    res.status(201).json({ ...resultatVaccination.rows[0], doses_utilisees: dosesNecessaires });
+
+    // Le manque est renvoyé tel quel : l'écran doit pouvoir le dire au
+    // responsable sur-le-champ, pas le laisser croire que tout va bien.
+    const manqueFlacons =
+      flaconsNecessaires === null ? 0 : flaconsNecessaires - (flaconsUtilises ?? 0);
+    res.status(201).json({
+      ...resultatVaccination.rows[0],
+      doses_utilisees: dosesUtilisees,
+      doses_necessaires: dosesNecessaires,
+      doses_par_flacon: dosesParFlacon,
+      flacons_utilises: flaconsUtilises,
+      flacons_necessaires: flaconsNecessaires,
+      flacons_detail: detailFlacons,
+      flacons_manquants: manqueFlacons > 0 ? manqueFlacons : 0,
+    });
   } catch (erreur) {
     await client.query("ROLLBACK");
     if (erreur.statut) {
