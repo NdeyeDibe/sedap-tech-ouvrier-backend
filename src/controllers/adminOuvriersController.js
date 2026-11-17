@@ -480,7 +480,103 @@ async function supprimerOuvrier(req, res) {
   }
 }
 
+// ------------------------------------- corriger les coordonnées d'un compte
+//
+// POURQUOI (demande Ndeye, 17 nov. 2026). Un nom mal orthographié, ou
+// surtout un numéro de téléphone erroné, n'avait aucun remède : il fallait
+// effacer le compte pour le recréer — impossible dès qu'il a servi, et
+// c'est bien ainsi, son historique doit rester lisible. On se retrouvait
+// donc avec deux comptes pour la même personne, comme les deux Moustapha
+// Ndiaye de la liste.
+//
+// Le téléphone n'est pas un détail : c'est l'identifiant de connexion du
+// responsable. Le changer, c'est lui donner un nouveau moyen d'entrer et
+// retirer l'ancien. D'où l'unicité vérifiée, et la trace au journal avec
+// l'ancienne valeur — sans elle, personne ne pourrait comprendre plus tard
+// pourquoi un compte a changé de main.
+async function modifierOuvrier(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ erreur: "Identifiant invalide." });
+
+  const prenom = String(req.body.prenom ?? "").trim();
+  const nom = String(req.body.nom ?? "").trim();
+  const telephone = String(req.body.telephone ?? "").replace(/\s/g, "");
+
+  if (!prenom || !nom) {
+    return res.status(400).json({ erreur: "Le prénom et le nom sont attendus." });
+  }
+  // Même règle qu'à la création : 221 suivi de 9 chiffres.
+  if (!/^221\d{9}$/.test(telephone)) {
+    return res.status(400).json({
+      erreur: "Numéro invalide. Attendu : 221 suivi des 9 chiffres (ex. 221771234567).",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      "SELECT id, prenom, nom, telephone FROM ouvriers WHERE id = $1 FOR UPDATE",
+      [id]
+    );
+    const avant = rows[0];
+    if (!avant) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Compte introuvable." });
+    }
+
+    if (telephone !== avant.telephone) {
+      const { rows: occupe } = await client.query(
+        "SELECT id, prenom, nom FROM ouvriers WHERE telephone = $1 AND id <> $2",
+        [telephone, id]
+      );
+      if (occupe[0]) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          erreur:
+            `Ce numéro est déjà celui de ${occupe[0].prenom} ${occupe[0].nom}. ` +
+            `Deux comptes ne peuvent pas partager un numéro : c'est avec lui qu'on se connecte.`,
+        });
+      }
+    }
+
+    const change =
+      prenom !== avant.prenom || nom !== avant.nom || telephone !== avant.telephone;
+    if (!change) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ erreur: "Aucune modification : les valeurs sont identiques." });
+    }
+
+    await client.query(
+      "UPDATE ouvriers SET prenom = $2, nom = $3, telephone = $4 WHERE id = $1",
+      [id, prenom, nom, telephone]
+    );
+    await client.query("COMMIT");
+
+    parAdmin(req, {
+      action: "ouvrier_modifie",
+      cibleType: "ouvrier",
+      cibleId: id,
+      details: {
+        avant: { prenom: avant.prenom, nom: avant.nom, telephone: avant.telephone },
+        apres: { prenom, nom, telephone },
+        telephoneChange: telephone !== avant.telephone,
+      },
+    });
+
+    res.json({ id, prenom, nom, telephone, telephoneChange: telephone !== avant.telephone });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur modification du responsable :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
+  modifierOuvrier,
   creerOuvrierResponsable,
   listerOuvriers,
   rattacherOuvrier,

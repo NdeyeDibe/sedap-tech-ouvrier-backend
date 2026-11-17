@@ -446,7 +446,171 @@ async function rafraichirMeteo(req, res) {
   }
 }
 
+// ------------------------------------------------- supprimer un poulailler
+//
+// POURQUOI CETTE ROUTE EXISTE (demande Ndeye, 17 nov. 2026). Un poulailler
+// créé par erreur, ou dont la bande est partie de travers, doit pouvoir
+// être effacé pour repartir proprement avec le même numéro.
+//
+// CE QUE ÇA DÉTRUIT, ET POURQUOI C'EST GRAVE. La base efface en cascade :
+// les bandes du poulailler, et avec chacune ses saisies quotidiennes, ses
+// pesages, ses vaccinations, ses photos, ses ventes, son stock — et ses
+// FACTURES, avec les paiements qui s'y rattachent. Des mois de travail
+// d'un responsable, et de l'argent encaissé, disparaissent d'un clic.
+//
+// D'où trois verrous, et aucun n'est décoratif :
+//
+//   1. un aperçu chiffré AVANT d'agir, parce qu'on ne décide pas de
+//      détruire ce qu'on ne voit pas ;
+//   2. le nom du poulailler à retaper, pour qu'un clic de trop ne suffise
+//      jamais ;
+//   3. un refus net si un paiement a été encaissé. Les chiffres se
+//      refont, un paiement effacé ne se retrouve pas.
+
+async function apercuSuppressionPoulailler(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ erreur: "Identifiant invalide." });
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT pl.id, pl.nom, f.nom AS ferme,
+              (SELECT count(*) FROM bandes b WHERE b.poulailler_id = pl.id) AS bandes,
+              (SELECT count(*) FROM bandes b
+                WHERE b.poulailler_id = pl.id AND b.statut <> 'terminee') AS bandes_ouvertes,
+              (SELECT count(*) FROM saisies_mortalite s
+                 JOIN bandes b ON b.id = s.bande_id WHERE b.poulailler_id = pl.id) AS saisies,
+              (SELECT count(*) FROM ventes v
+                 JOIN bandes b ON b.id = v.bande_id WHERE b.poulailler_id = pl.id) AS ventes,
+              (SELECT count(*) FROM factures fa
+                 JOIN bandes b ON b.id = fa.bande_id WHERE b.poulailler_id = pl.id) AS factures,
+              (SELECT coalesce(sum(p.montant), 0) FROM paiements p
+                 JOIN factures fa ON fa.id = p.facture_id
+                 JOIN bandes b ON b.id = fa.bande_id WHERE b.poulailler_id = pl.id) AS paiements,
+              (SELECT count(*) FROM personnel pe
+                WHERE pe.poulailler_id = pl.id AND pe.fin_fonction IS NULL) AS personnel
+         FROM poulaillers pl
+         JOIN fermes f ON f.id = pl.ferme_id
+        WHERE pl.id = $1`,
+      [id]
+    );
+
+    const p = rows[0];
+    if (!p) return res.status(404).json({ erreur: "Poulailler introuvable." });
+
+    const paiements = Number(p.paiements);
+    res.json({
+      id: p.id,
+      nom: p.nom,
+      ferme: p.ferme,
+      detruit: {
+        bandes: Number(p.bandes),
+        bandesOuvertes: Number(p.bandes_ouvertes),
+        saisies: Number(p.saisies),
+        ventes: Number(p.ventes),
+        factures: Number(p.factures),
+        personnel: Number(p.personnel),
+      },
+      // Le seul motif de refus absolu : de l'argent déjà encaissé.
+      bloquant: paiements > 0 ? { paiements } : null,
+    });
+  } catch (erreur) {
+    console.error("Erreur aperçu de suppression :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+async function supprimerPoulailler(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ erreur: "Identifiant invalide." });
+
+  const motif = String(req.body.motif ?? "").trim();
+  const confirmation = String(req.body.confirmation ?? "").trim();
+  if (!motif) return res.status(400).json({ erreur: "Indiquez la raison de la suppression." });
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      `SELECT pl.id, pl.nom, pl.ferme_id, f.nom AS ferme,
+              (SELECT count(*) FROM bandes b WHERE b.poulailler_id = pl.id) AS bandes,
+              (SELECT coalesce(sum(p.montant), 0) FROM paiements p
+                 JOIN factures fa ON fa.id = p.facture_id
+                 JOIN bandes b ON b.id = fa.bande_id WHERE b.poulailler_id = pl.id) AS paiements
+         FROM poulaillers pl
+         JOIN fermes f ON f.id = pl.ferme_id
+        WHERE pl.id = $1
+          FOR UPDATE OF pl`,
+      [id]
+    );
+
+    const poulailler = rows[0];
+    if (!poulailler) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Poulailler introuvable." });
+    }
+
+    // Le nom retapé : un clic de trop ne doit jamais suffire à effacer
+    // des mois de saisies.
+    if (confirmation.toLowerCase() !== String(poulailler.nom).trim().toLowerCase()) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        erreur: `Pour confirmer, retapez exactement le nom du poulailler : ${poulailler.nom}.`,
+      });
+    }
+
+    if (Number(poulailler.paiements) > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        erreur:
+          `${Number(poulailler.paiements).toLocaleString("fr-FR")} F ont été encaissés sur ce ` +
+          `poulailler. Supprimer effacerait ces paiements. Traitez d'abord la facture.`,
+      });
+    }
+
+    // Le personnel n'est pas effacé : ces comptes servent ailleurs, et
+    // leur historique doit rester lisible. Ils sont simplement détachés,
+    // comme lors d'un retrait de poste.
+    await client.query(
+      `UPDATE personnel SET fin_fonction = CURRENT_DATE
+        WHERE poulailler_id = $1 AND fin_fonction IS NULL`,
+      [id]
+    );
+
+    await client.query("DELETE FROM poulaillers WHERE id = $1", [id]);
+    await client.query("COMMIT");
+
+    parAdmin(req, {
+      action: "poulailler_supprime",
+      cibleType: "poulailler",
+      cibleId: id,
+      details: {
+        motif,
+        poulailler: poulailler.nom,
+        ferme: poulailler.ferme,
+        bandesDetruites: Number(poulailler.bandes),
+      },
+    });
+
+    res.json({
+      supprime: id,
+      nom: poulailler.nom,
+      message:
+        `${poulailler.nom} a été supprimé. Son numéro est de nouveau disponible : ` +
+        `le prochain poulailler ajouté à cette ferme le reprendra.`,
+    });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur suppression du poulailler :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
+  apercuSuppressionPoulailler,
+  supprimerPoulailler,
   detailFerme,
   ajouterPoulailler,
   communes,

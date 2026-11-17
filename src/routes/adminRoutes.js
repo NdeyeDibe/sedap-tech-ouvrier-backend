@@ -11,6 +11,7 @@ const {
 const {
   creerOuvrierResponsable,
   listerOuvriers,
+  modifierOuvrier,
   rattacherOuvrier,
   retirerOuvrier,
   supprimerOuvrier,
@@ -67,6 +68,8 @@ const {
   rafraichirMeteo,
   packs,
   definirAbonnement,
+  apercuSuppressionPoulailler,
+  supprimerPoulailler,
 } = require("../controllers/adminFermesController");
 const {
   listerFactures,
@@ -186,6 +189,11 @@ router.post("/meteo/rafraichir", rafraichirMeteo);
 // découlent les 4 mois gratuits puis la facturation.
 router.get("/packs", packs);
 router.patch("/poulaillers/:id/abonnement", definirAbonnement);
+// Suppression d'un poulailler : l'aperçu d'abord, l'effacement ensuite.
+// Deux routes et non une, parce qu'on ne décide pas de détruire ce qu'on
+// n'a pas vu.
+router.get("/poulaillers/:id/suppression", apercuSuppressionPoulailler);
+router.delete("/poulaillers/:id", supprimerPoulailler);
 
 // Facturation : une facture par bande, émise à son ouverture, et les
 // encaissements saisis par SEDAP tant qu'aucun agrégateur n'est branché.
@@ -238,6 +246,8 @@ router.patch("/receptions/:id", corrigerReception);
 // compte retiré de son poste devient introuvable alors que son numéro
 // reste pris (cas Tchernandjai, oct. 2026).
 router.get("/ouvriers", listerOuvriers);
+// Corriger un nom ou un numéro plutôt que de créer un second compte.
+router.patch("/ouvriers/:id", modifierOuvrier);
 router.patch("/ouvriers/:id/rattacher", rattacherOuvrier);
 router.patch("/ouvriers/:id/retirer", retirerOuvrier);
 router.delete("/ouvriers/:id", supprimerOuvrier);
