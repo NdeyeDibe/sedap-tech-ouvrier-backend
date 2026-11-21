@@ -76,6 +76,7 @@ async function corrigerReception(req, res) {
     // le même produit se marcheraient dessus dans le calcul de l'écart.
     const { rows } = await client.query(
       `SELECT r.id, r.stock_produit_id, r.source,
+              r.unites_recues, r.doses_par_unite,
               ${CHAMPS.map((c) => `r.${c}`).join(", ")},
               sp.nom AS produit_nom, sp.unite, sp.quantite AS stock_actuel,
               sp.poulailler_id
@@ -128,6 +129,36 @@ async function corrigerReception(req, res) {
       });
     }
 
+    // VACCINS : la quantité est en doses, mais la ligne garde aussi le
+    // nombre de flacons reçus, et c'est LUI qui s'affiche partout (« 2
+    // flacons de 1 000 doses »). Corriger les doses sans recalculer les
+    // flacons laissait les deux chiffres se contredire pour toujours :
+    // une ligne ramenée à 2 000 doses continuait d'annoncer 2 000
+    // flacons (bug relevé le 20 nov. 2026).
+    //
+    // Un flacon ne se coupe pas en deux — c'est la règle posée pour la
+    // vaccination, et elle vaut aussi ici. Une quantité qui ne tombe pas
+    // juste est donc refusée, avec les deux valeurs possibles : mieux
+    // vaut un refus clair qu'un nombre de flacons inventé.
+    const dosesParFlacon =
+      reception.doses_par_unite === null ? null : Number(reception.doses_par_unite);
+    let flaconsApres = null;
+    if (dosesParFlacon) {
+      if (apres.quantite_recue % dosesParFlacon !== 0) {
+        await client.query("ROLLBACK");
+        const bas = Math.floor(apres.quantite_recue / dosesParFlacon);
+        const haut = bas + 1;
+        return res.status(400).json({
+          erreur:
+            `${apres.quantite_recue} doses ne font pas un nombre entier de flacons ` +
+            `de ${dosesParFlacon} doses. Les valeurs possibles les plus proches sont ` +
+            `${bas * dosesParFlacon} doses (${bas} flacon${bas > 1 ? "s" : ""}) ` +
+            `et ${haut * dosesParFlacon} doses (${haut} flacon${haut > 1 ? "s" : ""}).`,
+        });
+      }
+      flaconsApres = apres.quantite_recue / dosesParFlacon;
+    }
+
     // L'écart à répercuter sur le stock disponible.
     const ecart = apres.quantite_recue - avant.quantite_recue;
     const stockApres = Number(reception.stock_actuel) + ecart;
@@ -152,9 +183,17 @@ async function corrigerReception(req, res) {
     await client.query(
       `UPDATE stock_receptions
           SET quantite_recue = $2, prix_unitaire = $3, provenance = $4,
-              date_reception = coalesce($5::timestamptz, date_reception)
+              date_reception = coalesce($5::timestamptz, date_reception),
+              unites_recues = coalesce($6, unites_recues)
         WHERE id = $1`,
-      [receptionId, apres.quantite_recue, apres.prix_unitaire, apres.provenance, apres.date_reception]
+      [
+        receptionId,
+        apres.quantite_recue,
+        apres.prix_unitaire,
+        apres.provenance,
+        apres.date_reception,
+        flaconsApres,
+      ]
     );
 
     if (ecart !== 0) {
