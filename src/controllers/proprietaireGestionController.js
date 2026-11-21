@@ -99,29 +99,18 @@ async function modifierOuvrier(req, res) {
     const avant = rows[0];
 
     if (avant.role === "responsable") {
-      if (salaire == null || salaire < 0) {
-        return res.status(400).json({ erreur: "Salaire requis." });
-      }
-      await pool.query("UPDATE personnel SET salaire = $1 WHERE id = $2", [
-        salaire,
-        personnelId,
-      ]);
-
-      if (String(avant.salaire) !== String(salaire)) {
-        parProprietaire(req, {
-          action: "salaire_modifie",
-          cibleType: "personnel",
-          cibleId: avant.id,
-          fermeId: ferme.id,
-          poulaillerId: avant.poulailler_id ?? undefined,
-          details: {
-            prenom: avant.prenom,
-            role: "responsable",
-            salaire: { avant: avant.salaire, apres: Number(salaire) },
-          },
-        });
-      }
-      return res.json({ id: Number(personnelId), salaire });
+      // L'IDENTITÉ D'UN RESPONSABLE EST MODIFIABLE PAR SON PROPRIÉTAIRE.
+      //
+      // Elle ne l'était pas : le compte étant créé par SEDAP, l'écran
+      // n'offrait que le salaire. Mais c'est le propriétaire qui voit son
+      // responsable tous les jours, et un numéro mal saisi le laissait sans
+      // recours — il fallait écrire à SEDAP (demande Mengué, 21 nov. 2026).
+      //
+      // Le compte lui-même vit dans `ouvriers` ; `personnel` n'en garde
+      // qu'une copie pour l'affichage et les charges. Les deux se mettent à
+      // jour ensemble, sinon le propriétaire corrige un prénom qui
+      // réapparaît ailleurs sous son ancienne forme.
+      return modifierResponsable(req, res, { ferme, avant });
     }
 
     await pool.query(
@@ -167,6 +156,130 @@ async function modifierOuvrier(req, res) {
   } catch (erreur) {
     console.error("Erreur modification d'un ouvrier :", erreur);
     res.status(500).json({ erreur: "Erreur serveur." });
+  }
+}
+
+/**
+ * Le propriétaire corrige son responsable : prénom, nom, téléphone, salaire.
+ *
+ * LE TÉLÉPHONE EST LA CLÉ DE CONNEXION. Les mêmes règles qu'à l'admin
+ * s'appliquent donc ici, et pour la même raison : 221 suivi de neuf
+ * chiffres, et jamais deux comptes sur un même numéro — celui qui perdrait
+ * le sien ne pourrait plus entrer dans l'application.
+ *
+ * Le propriétaire ne peut toucher qu'un responsable de SA ferme : l'appelant
+ * a déjà vérifié le `ferme_id` avant d'arriver ici.
+ */
+async function modifierResponsable(req, res, { ferme, avant }) {
+  const fourni = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+
+  const prenom = fourni(req.body.prenom) ? String(req.body.prenom).trim() : null;
+  const nom = fourni(req.body.nom) ? String(req.body.nom).trim() : null;
+  const telephone = fourni(req.body.telephone)
+    ? String(req.body.telephone).replace(/[\s+]/g, "")
+    : null;
+  const salaire = req.body.salaire == null ? null : Number(req.body.salaire);
+
+  if (salaire !== null && (!Number.isFinite(salaire) || salaire < 0)) {
+    return res.status(400).json({ erreur: "Salaire invalide." });
+  }
+  if (telephone !== null && !/^221\d{9}$/.test(telephone)) {
+    return res.status(400).json({
+      erreur:
+        "Numéro invalide. Attendu : 221 suivi des 9 chiffres (ex. 221771234567).",
+    });
+  }
+  if (prenom === null && nom === null && telephone === null && salaire === null) {
+    return res.status(400).json({ erreur: "Rien à modifier." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: comptes } = await client.query(
+      "SELECT id, prenom, nom, telephone FROM ouvriers WHERE id = $1 FOR UPDATE",
+      [avant.ouvrier_id]
+    );
+    const compte = comptes[0];
+    if (!compte) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ erreur: "Compte introuvable." });
+    }
+
+    if (telephone !== null && telephone !== compte.telephone) {
+      const { rows: occupe } = await client.query(
+        "SELECT prenom, nom FROM ouvriers WHERE telephone = $1 AND id <> $2",
+        [telephone, compte.id]
+      );
+      if (occupe[0]) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          erreur:
+            `Ce numéro est déjà celui de ${occupe[0].prenom} ${occupe[0].nom}. ` +
+            `Deux comptes ne peuvent pas partager un numéro : c'est avec lui ` +
+            `qu'on se connecte.`,
+        });
+      }
+    }
+
+    const apres = {
+      prenom: prenom ?? compte.prenom,
+      nom: nom ?? compte.nom,
+      telephone: telephone ?? compte.telephone,
+    };
+
+    await client.query(
+      "UPDATE ouvriers SET prenom = $2, nom = $3, telephone = $4 WHERE id = $1",
+      [compte.id, apres.prenom, apres.nom, apres.telephone]
+    );
+    // La copie d'affichage suit le compte, sinon l'ancien prénom réapparaît
+    // sur les charges et dans le résumé annuel.
+    await client.query(
+      `UPDATE personnel
+          SET prenom = $2, telephone = $3, salaire = coalesce($4, salaire)
+        WHERE id = $1`,
+      [avant.id, apres.prenom, apres.telephone, salaire]
+    );
+
+    await client.query("COMMIT");
+
+    const changements = {};
+    if (apres.prenom !== compte.prenom)
+      changements.prenom = { avant: compte.prenom, apres: apres.prenom };
+    if (apres.nom !== compte.nom)
+      changements.nom = { avant: compte.nom, apres: apres.nom };
+    if (apres.telephone !== compte.telephone)
+      changements.telephone = { avant: compte.telephone, apres: apres.telephone };
+    if (salaire !== null && String(avant.salaire) !== String(salaire))
+      changements.salaire = { avant: avant.salaire, apres: salaire };
+
+    if (Object.keys(changements).length > 0) {
+      parProprietaire(req, {
+        action:
+          Object.keys(changements).length === 1 && changements.salaire
+            ? "salaire_modifie"
+            : "ouvrier_modifie",
+        cibleType: "personnel",
+        cibleId: avant.id,
+        fermeId: ferme.id,
+        poulaillerId: avant.poulailler_id ?? undefined,
+        details: { prenom: compte.prenom, role: "responsable", ...changements },
+      });
+    }
+
+    res.json({
+      id: Number(avant.id),
+      ...apres,
+      salaire: salaire ?? avant.salaire,
+      telephoneChange: apres.telephone !== compte.telephone,
+    });
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    console.error("Erreur modification du responsable :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
   }
 }
 

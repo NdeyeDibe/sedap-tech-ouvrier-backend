@@ -552,6 +552,14 @@ async function modifierOuvrier(req, res) {
       "UPDATE ouvriers SET prenom = $2, nom = $3, telephone = $4 WHERE id = $1",
       [id, prenom, nom, telephone]
     );
+    // `personnel` garde une copie du prénom et du numéro, pour l'affichage
+    // et les charges du propriétaire. Sans cette ligne, SEDAP corrigeait le
+    // compte et l'ancien prénom continuait d'apparaître sur la fiche de
+    // charges et dans le résumé annuel (relevé le 21 nov. 2026).
+    await client.query(
+      "UPDATE personnel SET prenom = $2, telephone = $3 WHERE ouvrier_id = $1",
+      [id, prenom, telephone]
+    );
     await client.query("COMMIT");
 
     parAdmin(req, {

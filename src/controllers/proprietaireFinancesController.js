@@ -248,10 +248,15 @@ async function chargesMensuelles(req, res) {
 
     const [personnel, frais] = await Promise.all([
       pool.query(
+        // Le nom de famille d'un responsable vit dans son compte, pas dans
+        // `personnel` qui n'en garde que le prénom. Il est remonté ici pour
+        // que le propriétaire puisse le corriger comme le reste.
         `SELECT pe.id, pe.role, pe.prenom, pe.telephone, pe.salaire,
-                pe.prise_fonction, pe.poulailler_id, pl.nom AS poulailler_nom
+                pe.prise_fonction, pe.poulailler_id, pl.nom AS poulailler_nom,
+                o.nom AS compte_nom
            FROM personnel pe
            LEFT JOIN poulaillers pl ON pl.id = pe.poulailler_id
+           LEFT JOIN ouvriers o     ON o.id = pe.ouvrier_id
           WHERE pe.ferme_id = $1 AND pe.fin_fonction IS NULL
           ORDER BY pe.role, pe.id`,
         [ferme.id]
@@ -279,6 +284,8 @@ async function chargesMensuelles(req, res) {
         id: p.id,
         role: p.role,
         prenom: p.prenom,
+        // Nul pour un ouvrier simple : lui n'a pas de compte.
+        nom: p.compte_nom ?? null,
         telephone: p.telephone,
         // Nul tant que le propriétaire ne l'a pas fixé : le compte du
         // responsable existe déjà, mais ne pèse pas encore.
