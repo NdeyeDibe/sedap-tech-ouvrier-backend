@@ -215,6 +215,49 @@ async function bandeActive(req, res) {
       [bande.id]
     );
 
+    // LE PROGRAMME VOYAGE AVEC LA BANDE, et non dans une requête à part :
+    // l'accueil le lit à chaque ouverture, souvent sur une connexion de
+    // brousse. Quatorze lignes ne pèsent rien à côté d'un aller-retour
+    // supplémentaire.
+    //
+    // Jusqu'ici les jours de vaccin et de pesage étaient écrits en dur
+    // dans l'application (9, 14, 21 et 7, 14, 21, 28, 35). Le jour où
+    // SEDAP modifiait le programme, les rappels mentaient sans que
+    // personne ne s'en aperçoive — et les traitements, eux, n'avaient
+    // jamais eu de rappel du tout.
+    const resultatProgramme = await pool.query(
+      `SELECT ordre, nom, type, jour_debut, jour_fin, produits,
+              date_prevue, date_limite, confirme, en_retard, date_faite,
+              poids_mesure_g, dans_fourchette
+         FROM programme_bandes WHERE bande_id = $1 ORDER BY ordre`,
+      [bande.id]
+    );
+
+    const programme = resultatProgramme.rows.map((a) => {
+      const dernierJour = a.jour_fin ?? a.jour_debut;
+      return {
+        ordre: a.ordre,
+        nom: a.nom,
+        type: a.type,
+        jourDebut: a.jour_debut,
+        jourFin: dernierJour,
+        produits: a.produits ?? [],
+        confirme: a.confirme,
+        enRetard: a.en_retard,
+        dateFaite: a.date_faite,
+        poidsMesureG: a.poids_mesure_g,
+        dansFourchette: a.dans_fourchette,
+        // La règle des rappels (décision Ndeye, 22 nov. 2026) : la carte
+        // s'affiche du premier au dernier jour de l'acte, et disparaît
+        // dès qu'il est confirmé. Passé ce délai le responsable ne peut
+        // plus rien déclarer — c'est SEDAP qui rattrape.
+        aFaireAujourdhui:
+          !a.confirme &&
+          bande.jour_actuel >= a.jour_debut &&
+          bande.jour_actuel <= dernierJour,
+      };
+    });
+
     const mortaliteTotale = bande.morts_a_larrivee + parseInt(resultatMortalite.rows[0].total, 10);
     const ventesTotales = parseInt(resultatVentes.rows[0].total, 10);
     const sujetsRestants = bande.poussins_recus - mortaliteTotale - ventesTotales;
@@ -224,6 +267,7 @@ async function bandeActive(req, res) {
       mortalite_totale: mortaliteTotale,
       ventes_totales: ventesTotales,
       sujets_restants: sujetsRestants,
+      programme,
       // Dit à l'interface si le bouton « Démarrer la vente » doit s'activer.
       vente_ouvrable:
         bande.statut === "en_cours" && bande.jour_actuel >= JOUR_OUVERTURE_VENTE,

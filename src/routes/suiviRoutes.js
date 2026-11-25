@@ -5,6 +5,7 @@ const exigerPoulaillerOuvert = require("../middleware/exigerPoulaillerOuvert");
 const verifierProprietaireBande = require("../middleware/verifierProprietaireBande");
 const {
   enregistrerVaccination,
+  enregistrerTraitement,
   enregistrerPesage,
   enregistrerProduitsUtilises,
 } = require("../controllers/suiviController");
@@ -16,6 +17,7 @@ router.use(exigerPoulaillerOuvert);
 router.use(verifierProprietaireBande);
 
 router.post("/vaccinations", enregistrerVaccination);
+router.post("/traitements", enregistrerTraitement);
 router.post("/pesages", enregistrerPesage);
 router.post("/produits-utilises", enregistrerProduitsUtilises);
 

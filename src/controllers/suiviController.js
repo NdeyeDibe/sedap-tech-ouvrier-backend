@@ -230,6 +230,140 @@ async function enregistrerVaccination(req, res) {
 // Ne consomme aucun stock — juste comparé à la table de référence.
 // Note CDC : hors fourchette n'empêche PAS l'enregistrement (juste une
 // alerte visuelle côté frontend).
+/**
+ * Déclarer un traitement du programme : vitamine, antistress,
+ * anticoccidien.
+ *
+ * MÊME TABLE QUE LA VACCINATION, et ce n'est pas un raccourci : du point
+ * de vue du programme sanitaire, un traitement administré est un acte
+ * réalisé, exactement comme un vaccin. La vue programme_bandes lit déjà
+ * `vaccinations` pour tout acte qui n'est pas un pesage, en comparant
+ * `vaccin_nom` au nom de l'acte. Déclarer sous le nom exact de l'acte
+ * suffit donc à le faire passer au vert, sans toucher à la vue.
+ *
+ * LE STOCK SE DÉDUIT TOUJOURS, sans case à cocher ni question (décision
+ * Ndeye, 22 nov. 2026) : déclarer l'acte EST la déduction. Une case
+ * séparée serait oubliée un jour ou l'autre, et le stock mentirait sans
+ * que personne ne s'en aperçoive.
+ *
+ * DEUX SOURCES POSSIBLES. Le produit vient du catalogue (vitamines,
+ * antistress) ou des « autres produits » que le responsable a ajoutés
+ * lui-même. Cette seconde porte n'est pas un luxe : le programme prévoit
+ * un anticoccidien à J18-J20 et il n'en existe aucun au catalogue — il
+ * s'achète en pharmacie.
+ */
+async function enregistrerTraitement(req, res) {
+  const { bandeId } = req.params;
+  const { jourBande, acteNom, quantite } = req.body;
+  const estAutre = Boolean(req.body.estAutre);
+  const produitId = req.body.produitId ?? null;
+  const varianteId = req.body.varianteId ?? null;
+  const autreProduitId = req.body.autreProduitId ?? null;
+
+  if (!jourBande || !acteNom) {
+    return res.status(400).json({ erreur: "jourBande et acteNom sont requis." });
+  }
+  const quantiteNombre = Number(quantite);
+  if (!Number.isFinite(quantiteNombre) || quantiteNombre <= 0) {
+    return res.status(400).json({ erreur: "La quantité utilisée est requise." });
+  }
+
+  const client = await pool.connect();
+  try {
+    const poulaillerId = await obtenirPoulaillerOuvrier(req.ouvrierId);
+    await client.query("BEGIN");
+
+    // Le même acte déclaré deux fois déduirait le stock deux fois. Le cas
+    // n'est pas théorique : hors ligne, la file d'attente peut renvoyer
+    // une requête déjà passée. On répond alors « c'est déjà enregistré »
+    // plutôt que d'ajouter une seconde ligne.
+    const dejaFait = await client.query(
+      `SELECT id FROM vaccinations
+        WHERE bande_id = $1 AND lower(vaccin_nom) = lower($2) AND jour_bande = $3`,
+      [bandeId, acteNom, jourBande]
+    );
+    if (dejaFait.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(200).json({
+        id: dejaFait.rows[0].id,
+        deja: true,
+        message: `${acteNom} était déjà déclaré pour ce jour.`,
+      });
+    }
+
+    let stockProduitId = null;
+    let stockAutreId = null;
+
+    if (estAutre) {
+      const trouve = await client.query(
+        `SELECT id, quantite, COALESCE(nom, 'ce produit') AS nom
+           FROM stock_autres_produits
+          WHERE id = $1 AND poulailler_id = $2`,
+        [autreProduitId, poulaillerId]
+      );
+      if (trouve.rows.length === 0) {
+        throw { statut: 400, message: "Produit introuvable dans votre stock." };
+      }
+      const stock = trouve.rows[0];
+      if (Number(stock.quantite) < quantiteNombre) {
+        throw {
+          statut: 409,
+          message: `Stock insuffisant : il reste ${stock.quantite} de ${stock.nom}.`,
+        };
+      }
+      await client.query(
+        "UPDATE stock_autres_produits SET quantite = quantite - $1 WHERE id = $2",
+        [quantiteNombre, stock.id]
+      );
+      stockAutreId = stock.id;
+    } else {
+      if (!produitId || !varianteId) {
+        throw { statut: 400, message: "Le produit utilisé est requis." };
+      }
+      const trouve = await client.query(
+        `SELECT id, quantite, nom FROM stock_produits
+          WHERE poulailler_id = $1 AND produit_id = $2 AND variante_id = $3`,
+        [poulaillerId, produitId, varianteId]
+      );
+      if (trouve.rows.length === 0) {
+        throw { statut: 400, message: `Produit inconnu : ${produitId}.${varianteId}` };
+      }
+      const stock = trouve.rows[0];
+      if (Number(stock.quantite) < quantiteNombre) {
+        throw {
+          statut: 409,
+          message: `Stock insuffisant : il reste ${stock.quantite} ${stock.nom}.`,
+        };
+      }
+      await client.query("UPDATE stock_produits SET quantite = quantite - $1 WHERE id = $2", [
+        quantiteNombre,
+        stock.id,
+      ]);
+      stockProduitId = stock.id;
+    }
+
+    const insere = await client.query(
+      `INSERT INTO vaccinations
+         (bande_id, jour_bande, vaccin_nom, stock_produit_id,
+          stock_autre_produit_id, quantite_utilisee)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [bandeId, jourBande, acteNom, stockProduitId, stockAutreId, quantiteNombre]
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json(insere.rows[0]);
+  } catch (erreur) {
+    await client.query("ROLLBACK");
+    if (erreur.statut) {
+      return res.status(erreur.statut).json({ erreur: erreur.message });
+    }
+    console.error("Erreur enregistrement du traitement :", erreur);
+    res.status(500).json({ erreur: "Erreur serveur." });
+  } finally {
+    client.release();
+  }
+}
+
 async function enregistrerPesage(req, res) {
   const { bandeId } = req.params;
   const { jourBande, poidsG } = req.body;
@@ -338,4 +472,9 @@ async function enregistrerProduitsUtilises(req, res) {
   }
 }
 
-module.exports = { enregistrerVaccination, enregistrerPesage, enregistrerProduitsUtilises };
+module.exports = {
+  enregistrerVaccination,
+  enregistrerTraitement,
+  enregistrerPesage,
+  enregistrerProduitsUtilises,
+};
