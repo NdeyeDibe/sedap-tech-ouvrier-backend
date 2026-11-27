@@ -51,7 +51,7 @@ async function detailFerme(req, res) {
     const f = fermes[0];
     if (!f) return res.status(404).json({ erreur: "Ferme introuvable." });
 
-    const [lignes, { rows: complements }] = await Promise.all([
+    const [lignes, { rows: complements }, { rows: terminees }] = await Promise.all([
       chargerFerme(f.proprietaire_id),
       // Ce que chargerFerme ne donne pas : capacité, nom complet du
       // responsable, et date de la dernière saisie de chaque poulailler.
@@ -77,9 +77,40 @@ async function detailFerme(req, res) {
           WHERE pl.ferme_id = $1 AND pl.archive_le IS NULL`,
         [fermeId]
       ),
+      // Les bandes terminées, que chargerFerme laisse de côté : il ne
+      // remonte que la bande en cours. Sans elles, un poulailler dont la
+      // bande est finie n'offrait plus aucun moyen de l'ouvrir, et toute
+      // comparaison d'une bande à la précédente passait par Rapports, trois
+      // écrans plus loin et filtré par année (demande Mengué, 27 nov. 2026).
+      pool.query(
+        `SELECT b.poulailler_id, b.id, b.numero, b.date_fin,
+                e.morts, e.vendus, e.taux_mortalite
+           FROM bandes b
+           JOIN poulaillers pl ON pl.id = b.poulailler_id
+           LEFT JOIN etat_bandes e ON e.bande_id = b.id
+          WHERE pl.ferme_id = $1 AND pl.archive_le IS NULL
+            AND b.statut = 'terminee'
+          ORDER BY b.poulailler_id, b.numero DESC`,
+        [fermeId]
+      ),
     ]);
 
     const parPoulailler = new Map(complements.map((c) => [c.id, c]));
+
+    // Groupées par poulailler, la plus récente en tête (ORDER BY numero DESC).
+    const terminesParPoulailler = new Map();
+    for (const t of terminees) {
+      const liste = terminesParPoulailler.get(t.poulailler_id) ?? [];
+      liste.push({
+        id: t.id,
+        numero: t.numero,
+        dateFin: t.date_fin,
+        morts: Number(t.morts ?? 0),
+        vendus: Number(t.vendus ?? 0),
+        tauxMortalite: t.taux_mortalite == null ? 0 : Number(t.taux_mortalite),
+      });
+      terminesParPoulailler.set(t.poulailler_id, liste);
+    }
 
     const poulaillers = lignes
       .filter((l) => l.ferme_id === fermeId)
@@ -121,6 +152,7 @@ async function detailFerme(req, res) {
                 tauxMortalite: l.taux_mortalite == null ? 0 : Number(l.taux_mortalite),
               }
             : null,
+          bandesTerminees: terminesParPoulailler.get(l.poulailler_id) ?? [],
           statut: l.niveau,
           alertes: l.alertes.length,
           derniereSaisie: c.derniere_saisie ?? null,

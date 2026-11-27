@@ -377,7 +377,10 @@ async function detailBandeAdmin(req, res) {
 
     // Le reste du contenu vient des mêmes requêtes que l'écran du
     // propriétaire — c'est ce que demande le cahier admin (section IX).
-    const [saisies, programme, depenses, stock, ventes, receptions, corrections, bilan] = await Promise.all([
+    const [
+      saisies, programme, depenses, stock, ventes, receptions, corrections, bilan,
+      alimentTotal, produitsUtilises,
+    ] = await Promise.all([
       // Les JOURNÉES de la bande, celles sans saisie comprises. Avant,
       // cette liste partait des mortalités enregistrées : un jour que
       // personne n'avait saisi n'avait pas de ligne et disparaissait,
@@ -453,6 +456,45 @@ async function detailBandeAdmin(req, res) {
            FROM bilans_bandes WHERE bande_id = $1`,
         [bandeId]
       ),
+      // Tout l'aliment distribué sur la bande, par type. L'écran le montrait
+      // jour par jour dans l'historique ; une bande close se juge sur le
+      // total, et personne n'allait additionner quarante-cinq lignes.
+      pool.query(
+        `SELECT type_aliment,
+                coalesce(sum(sacs), 0)               AS sacs,
+                coalesce(sum(kg_supplementaires), 0) AS kg
+           FROM saisies_alimentation
+          WHERE bande_id = $1
+          GROUP BY type_aliment
+          -- Dans l'ordre de l'élevage, pas dans l'ordre alphabétique :
+          -- « Croissance, Démarrage, Finition » se lit comme une erreur.
+          ORDER BY CASE type_aliment
+                     WHEN 'demarrage'  THEN 1
+                     WHEN 'croissance' THEN 2
+                     WHEN 'finition'   THEN 3
+                     ELSE 4
+                   END`,
+        [bandeId]
+      ),
+      // Tous les produits sortis du stock pour cette bande, cumulés :
+      // vaccins, vitamines, antistress et les produits propres au
+      // responsable, qui ne sont nulle part ailleurs sur la fiche.
+      pool.query(
+        `SELECT coalesce(sp.nom, sa.nom)          AS nom,
+                sp.produit_id                     AS produit_id,
+                sp.unite                          AS unite,
+                sum(pu.quantite)                  AS quantite,
+                min(pu.date_saisie)               AS premiere,
+                max(pu.date_saisie)               AS derniere,
+                count(*)                          AS sorties
+           FROM produits_utilises pu
+           LEFT JOIN stock_produits sp        ON sp.id = pu.stock_produit_id
+           LEFT JOIN stock_autres_produits sa ON sa.id = pu.stock_autre_produit_id
+          WHERE pu.bande_id = $1
+          GROUP BY 1, 2, 3
+          ORDER BY 1`,
+        [bandeId]
+      ),
     ]);
 
     // Les jours déjà corrigés, pour l'icône crayon de l'historique.
@@ -503,6 +545,22 @@ async function detailBandeAdmin(req, res) {
       // propriétaire. Une bande en cours en a un aussi : il est partiel,
       // l'écran le dit.
       bilan: bilanChiffre(bilan.rows[0]),
+
+      alimentTotal: alimentTotal.rows.map((a) => ({
+        type: a.type_aliment,
+        sacs: Number(a.sacs),
+        kg: Number(a.kg),
+      })),
+
+      produitsUtilises: produitsUtilises.rows.map((p) => ({
+        nom: p.nom || 'Sans nom',
+        produitId: p.produit_id,
+        unite: p.unite,
+        quantite: Number(p.quantite),
+        sorties: Number(p.sorties),
+        premiere: p.premiere,
+        derniere: p.derniere,
+      })),
 
       // Un jour se verrouille au changement de jour : passé cette limite,
       // l'ouvrier ne peut plus y toucher, seul SEDAP le peut.
