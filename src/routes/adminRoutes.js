@@ -83,6 +83,7 @@ const {
   apercuActe,
   declarerActe,
 } = require("../controllers/adminRattrapageController");
+const { reprendreBande } = require("../controllers/adminReprisBandeController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -193,6 +194,12 @@ router.post("/meteo/rafraichir", rafraichirMeteo);
 // découlent les 4 mois gratuits puis la facturation.
 router.get("/packs", packs);
 router.patch("/poulaillers/:id/abonnement", definirAbonnement);
+// Reprendre une ferme dont la bande a déjà commencé : SEDAP crée la
+// bande en disant où elle en est. Réservé à l'admin — créer une bande
+// engage la facturation, et trois créateurs possibles produiraient des
+// doublons.
+router.post("/poulaillers/:poulaillerId/reprendre-bande", reprendreBande);
+
 // Suppression d'un poulailler : l'aperçu d'abord, l'effacement ensuite.
 // Deux routes et non une, parce qu'on ne décide pas de détruire ce qu'on
 // n'a pas vu.
