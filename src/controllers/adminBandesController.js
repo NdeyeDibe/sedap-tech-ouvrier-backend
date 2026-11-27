@@ -527,6 +527,10 @@ async function detailBandeAdmin(req, res) {
       }),
 
       programme: programme.rows.map((p) => ({
+        // Le RANG identifie l'acte, pas son nom : le programme contient
+        // trois « Antistress » et deux « Vitamine ». Sans lui, déclarer
+        // celui de J9 pourrait valider celui de J21.
+        ordre: p.ordre,
         nom: p.nom,
         type: p.type,
         jourDebut: p.jour_debut,

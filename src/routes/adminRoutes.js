@@ -79,6 +79,10 @@ const {
   supprimerPaiement,
   accorderDelai,
 } = require("../controllers/adminFacturationController");
+const {
+  apercuActe,
+  declarerActe,
+} = require("../controllers/adminRattrapageController");
 const { exigerAdmin, exigerAdminPrincipal } = require("../middleware/exigerAdmin");
 
 // Interface admin — cahier admin v1.1, annexe A.
@@ -218,6 +222,15 @@ router.patch("/bandes/:id/saisies/:date", corrigerSaisie);
 // POST = la journée n'existe pas encore (oubli) ; PATCH = elle existe et
 // on la corrige. Deux verbes, deux intentions, aucun risque de confondre.
 router.post("/bandes/:id/saisies/:date", saisirJourneeOubliee);
+// Rattrapage du programme sanitaire : déclarer après coup qu'un acte a
+// été administré, ou corriger un poids. Le responsable ne peut rien
+// saisir hors de la fenêtre de l'acte — sans cette porte, un soin
+// réellement fait restait en retard jusqu'à la fin de la bande.
+// L'aperçu d'abord, la déclaration ensuite : on annonce ce qui sera
+// retiré du stock avant de le retirer.
+router.get("/bandes/:bandeId/actes/:ordre", apercuActe);
+router.post("/bandes/:bandeId/actes/:ordre", declarerActe);
+
 // Les photos de mortalité et le vocal de santé d'une journée : SEDAP juge
 // sur pièces avant de corriger un chiffre.
 router.get("/bandes/:bandeId/saisies/:date/photos", photosSaisieAdmin);
