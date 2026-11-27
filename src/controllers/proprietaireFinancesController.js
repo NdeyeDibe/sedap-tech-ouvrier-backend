@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { REQUETE_PROGRAMME } = require("./proprietaireController");
 const { correctionLisible, ACTIONS_VISIBLES } = require("../utils/corrections");
 const { resumeAnnuel, totalSalaires, fraisDuMois, totalFrais } =
   require("../utils/finances");
@@ -124,7 +125,8 @@ async function detailBilan(req, res) {
 
     const bilan = rows[0];
 
-    const [depenses, ventes, corrections] = await Promise.all([
+    const [depenses, ventes, corrections, programme, alimentTotal, produitsUtilises] =
+      await Promise.all([
       pool.query(
         // Les poussins ont leur propre ligne en tête du bilan (reception).
         `SELECT poste, quantite, cout FROM depenses_bandes
@@ -162,6 +164,45 @@ async function detailBilan(req, res) {
           LIMIT 10`,
         [bandeId, ACTIONS_VISIBLES]
       ),
+      // La PRODUCTION, et plus seulement l'argent (demande Mengué,
+      // 27 nov. 2026). Une fois la bande close, le propriétaire n'avait
+      // plus aucun écran où relire ce qui s'était passé dans son
+      // poulailler : son détail poulailler ne montre que la bande en
+      // cours, et ce bilan ne parlait que de francs. Les trois requêtes
+      // qui suivent sont exactement celles de la fiche admin — même
+      // source, donc pas d'écart possible entre ce qu'il lit et ce que
+      // SEDAP lui dit au téléphone.
+      pool.query(REQUETE_PROGRAMME, [bandeId]),
+      pool.query(
+        `SELECT type_aliment,
+                coalesce(sum(sacs), 0)               AS sacs,
+                coalesce(sum(kg_supplementaires), 0) AS kg
+           FROM saisies_alimentation
+          WHERE bande_id = $1
+          GROUP BY type_aliment
+          ORDER BY CASE type_aliment
+                     WHEN 'demarrage'  THEN 1
+                     WHEN 'croissance' THEN 2
+                     WHEN 'finition'   THEN 3
+                     ELSE 4
+                   END`,
+        [bandeId]
+      ),
+      pool.query(
+        `SELECT coalesce(sp.nom, sa.nom) AS nom,
+                sp.produit_id            AS produit_id,
+                sp.unite                 AS unite,
+                sum(pu.quantite)         AS quantite,
+                max(pu.date_saisie)      AS derniere,
+                count(*)                 AS sorties
+           FROM produits_utilises pu
+           LEFT JOIN stock_produits sp        ON sp.id = pu.stock_produit_id
+           LEFT JOIN stock_autres_produits sa ON sa.id = pu.stock_autre_produit_id
+          WHERE pu.bande_id = $1
+          GROUP BY 1, 2, 3
+          ORDER BY 1`,
+        [bandeId]
+      ),
     ]);
 
     res.json({
@@ -186,6 +227,35 @@ async function detailBilan(req, res) {
         sujets: Number(bilan.morts),
         pourcentage: bilan.taux_mortalite ? Number(bilan.taux_mortalite) : 0,
       },
+
+      programme: programme.rows.map((p) => ({
+        nom: p.nom,
+        type: p.type,
+        jourDebut: p.jour_debut,
+        jourFin: p.jour_fin,
+        confirme: p.confirme,
+        dateFaite: p.date_faite,
+        enRetard: p.en_retard,
+        poidsMesureG: p.poids_mesure_g === null ? null : Number(p.poids_mesure_g),
+        poidsMinG: p.poids_min_g === null ? null : Number(p.poids_min_g),
+        poidsMaxG: p.poids_max_g === null ? null : Number(p.poids_max_g),
+        dansFourchette: p.dans_fourchette,
+      })),
+
+      alimentTotal: alimentTotal.rows.map((a) => ({
+        type: a.type_aliment,
+        sacs: Number(a.sacs),
+        kg: Number(a.kg),
+      })),
+
+      produitsUtilises: produitsUtilises.rows.map((p) => ({
+        nom: p.nom || "Sans nom",
+        produitId: p.produit_id,
+        unite: p.unite,
+        quantite: Number(p.quantite),
+        sorties: Number(p.sorties),
+        derniere: p.derniere,
+      })),
 
       // Coût des poussins : commandés × prix (ce que facture le couvoir),
       // reçus à défaut — même calcul que la vue receptions_ferme (019).
